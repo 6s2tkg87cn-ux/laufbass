@@ -116,10 +116,15 @@ def evaluate(tab_text, notes, riffs=False):
                 best = (ok, k)
         return dict(mode="riffs", trigram_precision=best[0], shift=best[1], det=len(det))
     ref = [p for seq, rep in blocks for _ in range(rep) for p in seq]
-    k = best_shift(ref, det)
     a = [p % 12 for p in ref]
-    b = [(p + k) % 12 for p in det]
-    pairs = lcs_pairs(a, b)
+    best = None
+    # tuning: the recording may be tuned down (Eb: +1, D: +2 semitones to reach the tab's fret pitches);
+    # wider shifts would let a repeated riff "match" a different key by chance
+    for k in (0, 1, 2):
+        pr = lcs_pairs(a, [(p + k) % 12 for p in det])
+        if best is None or len(pr) > len(best[1]):
+            best = (k, pr)
+    k, pairs = best
     # octave: compare after the octave shift that fits most matched pairs
     diffs = [(ref[i] - det[j]) for i, j in pairs]
     oct_ok = 0
