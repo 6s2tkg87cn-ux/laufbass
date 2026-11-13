@@ -35,3 +35,6 @@ librosa==0.10.2.post1
 pretty_midi==0.2.11.post0
 soundfile==0.12.1
 setuptools<81
+
+# Mac-App-Fenster (nutzt das eingebaute WebKit; zieht pyobjc automatisch nach)
+pywebview==5.4

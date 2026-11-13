@@ -11,7 +11,7 @@ MP3 ──► Mac-Skript (Demucs + Basic Pitch + Drum-Erkennung) ──► Song.
 | Ordner | Inhalt |
 |---|---|
 | `app/index.html` | Die Übe-App: eine einzelne HTML-Datei ohne Installation |
-| `mac/` | Vorbereitungs-Skript für den Mac, Anleitung in [`mac/README.md`](mac/README.md) |
+| `mac/` | Vorbereitung auf dem Mac: App „Laufbass Vorbereiten“ + Skript, Anleitung in [`mac/README.md`](mac/README.md) |
 | `docs/FORMAT.md` | Aufbau einer `.laufbass.zip` |
 | `mac/testdata/` | Kleiner synthetischer Testsong zum Ausprobieren |
 

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Laufbass Vorbereiten</title>
+<style>
+:root{--bg:#14161b;--panel:#1c1f26;--panel2:#242832;--line:#2f3440;--text:#e9ebf0;--muted:#8d94a3;--bass:#f2a541;--drums:#3cc6b8;--danger:#ef6f6c;--ok:#6ccf7f}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;-webkit-user-select:none;user-select:none;cursor:default}
+body{display:flex;flex-direction:column}
+button{font:inherit;color:inherit;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+button:hover{border-color:#4a5162}
+button.primary{background:var(--bass);color:#1a1300;border-color:var(--bass);font-weight:600}
+button.link{background:none;border:0;padding:2px 4px;color:var(--muted)}
+button.link:hover{color:var(--text)}
+header{display:flex;align-items:center;gap:12px;padding:18px 22px 6px}
+header svg{width:40px;height:40px;flex:none}
+header h1{font-size:19px;margin:0;font-weight:700;letter-spacing:.2px}
+header p{margin:1px 0 0;color:var(--muted);font-size:13px}
+header .sp{flex:1}
+main{flex:1;overflow:auto;padding:12px 22px 16px}
+.drop{border:2px dashed #3a4050;border-radius:16px;padding:26px 18px;text-align:center;background:var(--panel);transition:.15s}
+.drop.over{border-color:var(--bass);background:#231d14;transform:scale(1.01)}
+.drop .ic{font-size:30px;line-height:1;margin-bottom:6px;color:var(--bass)}
+.drop h2{margin:0 0 4px;font-size:17px}
+.drop p{margin:0 0 14px;color:var(--muted)}
+.drop.compact{padding:14px 18px;display:flex;align-items:center;gap:14px;text-align:left}
+.drop.compact .ic{margin:0;font-size:22px}
+.drop.compact h2{font-size:14px;margin:0}
+.drop.compact p{margin:0;font-size:12px}
+.drop.compact .tx{flex:1}
+.list{margin-top:14px;display:flex;flex-direction:column;gap:10px}
+.job{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.job .top{display:flex;align-items:center;gap:10px}
+.job .name{font-weight:600;font-size:15px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.job .state{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.steps{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin:12px 0 6px}
+.seg{height:6px;border-radius:3px;background:#2a2f3a;overflow:hidden;position:relative}
+.seg i{position:absolute;inset:0;width:0;background:var(--bass);border-radius:3px;transition:width .3s}
+.seg.done i{width:100%;background:var(--drums)}
+.seg.run i{background:linear-gradient(90deg,var(--bass),#ffd08a,var(--bass));background-size:200% 100%;animation:sh 1.2s linear infinite}
+@keyframes sh{to{background-position:-200% 0}}
+.labels{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;font-size:11px;color:#6c7487}
+.labels span.on{color:var(--text)}
+.labels span.ok{color:var(--drums)}
+.job .msg{margin-top:8px;font-size:13px;color:var(--muted)}
+.job .msg b{color:var(--text);font-weight:600}
+.job.fertig{border-color:#2d5550}
+.job.fehler{border-color:#5a2e2e}
+.job.fehler .msg{color:#f2a3a1}
+.job .acts{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.stats{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:13px}
+.stats div{background:var(--panel2);border-radius:8px;padding:5px 10px}
+.stats b{font-variant-numeric:tabular-nums}
+.warn{margin-top:8px;font-size:12px;color:#e9c46a}
+pre.log{max-height:160px;overflow:auto;background:#101216;border-radius:8px;padding:8px 10px;font:11px/1.4 ui-monospace,Menlo,monospace;color:#aab1bf;white-space:pre-wrap;margin:8px 0 0;-webkit-user-select:text;user-select:text}
+footer{display:flex;align-items:center;gap:10px;padding:10px 22px 14px;border-top:1px solid var(--line);background:var(--panel);font-size:13px;color:var(--muted);flex-wrap:wrap}
+footer .path{color:var(--text);max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+footer .sp{flex:1}
+.empty{color:var(--muted);text-align:center;margin-top:18px;font-size:13px}
+#toast{position:fixed;left:50%;bottom:70px;transform:translateX(-50%);background:#2b303b;border:1px solid #444b5a;padding:9px 14px;border-radius:10px;opacity:0;transition:.25s;pointer-events:none}
+#toast.show{opacity:1}
+.notice{margin-top:12px;background:#2a2416;border:1px solid #5a4a24;color:#e9d9a9;border-radius:12px;padding:10px 14px;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2b303c"/><stop offset="1" stop-color="#191c23"/></linearGradient></defs><rect width="64" height="64" rx="14" fill="url(#g)"/><g stroke="#f2a541" stroke-width="2.4" stroke-linecap="round"><line x1="10" y1="22" x2="54" y2="22"/><line x1="10" y1="29" x2="54" y2="29"/><line x1="10" y1="36" x2="54" y2="36"/><line x1="10" y1="43" x2="54" y2="43"/></g><circle cx="35" cy="32.5" r="7.5" fill="#3cc6b8"/></svg>
+  <div>
+    <h1>Laufbass Vorbereiten</h1>
+    <p>Songs in Spuren trennen, Bass und Schlagzeug erkennen</p>
+  </div>
+  <div class="sp"></div>
+  <button id="practiceBtn" title="Übe-App im Browser öffnen">Übe-App öffnen</button>
+</header>
+
+<main>
+  <div class="drop" id="drop">
+    <div class="ic">♪</div>
+    <div class="tx">
+      <h2>Songs hierher ziehen</h2>
+      <p>MP3, M4A, WAV oder AIFF – auch mehrere oder ganze Ordner</p>
+    </div>
+    <button class="primary" id="chooseBtn">Songs auswählen …</button>
+  </div>
+  <div id="notices"></div>
+  <div class="list" id="list"></div>
+  <div class="empty" id="empty">Pro Song dauert es auf dem M1 etwa 1–3 Minuten. Du kannst mehrere Songs auf einmal hineinziehen; sie werden nacheinander vorbereitet.</div>
+</main>
+
+<footer>
+  <span>Speichern:</span>
+  <span class="path" id="outPath">neben dem Original-Song</span>
+  <button class="link" id="outBtn">ändern …</button>
+  <button class="link" id="outReset" style="display:none">zurücksetzen</button>
+  <span class="sp"></span>
+  <span id="queueInfo"></span>
+</footer>
+<div id="toast"></div>
+
+<script>
+const STEPS = ['Spuren trennen', 'Bass erkennen', 'Schlagzeug erkennen', 'Takt finden', 'Paket packen'];
+const $ = s => document.querySelector(s);
+const jobs = {};
+let api = null;
+
+function toast(t){ const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 3000); }
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function fmt(s){ s = Math.round(s); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+
+function render(id){
+  const j = jobs[id]; let el = document.getElementById('job' + id);
+  if (!el){ el = document.createElement('div'); el.id = 'job' + id; $('#list').append(el); }
+  el.className = 'job ' + j.state;
+  const segs = STEPS.map((_, i) => {
+    const n = i + 1; let cls = '', w = '';
+    if (j.state === 'fertig' || n < j.step) cls = 'done';
+    else if (n === j.step && j.state === 'läuft'){ cls = 'run'; w = n === 1 && j.sub != null ? Math.max(4, j.sub) + '%' : '100%'; }
+    return `<div class="seg ${cls}"><i style="${w ? 'width:' + w : ''}"></i></div>`;
+  }).join('');
+  const labels = STEPS.map((s, i) => { const n = i + 1; const c = (j.state === 'fertig' || n < j.step) ? 'ok' : (n === j.step && j.state === 'läuft') ? 'on' : ''; return `<span class="${c}">${s}</span>`; }).join('');
+  let state = '', msg = '', acts = '';
+  if (j.state === 'wartet'){ state = 'wartet'; acts = `<button class="link" data-a="cancel">entfernen</button>`; }
+  if (j.state === 'läuft'){
+    state = fmt((Date.now() / 1000) - j.started);
+    msg = j.step ? `<b>${esc(STEPS[j.step - 1])}</b>${j.step === 1 && j.sub != null ? ' · ' + j.sub + ' %' : ''}` : 'Startet …';
+    if (j.step === 1 && !j.sub) msg += ' – das ist der längste Schritt';
+    acts = `<button data-a="cancel">Abbrechen</button><button class="link" data-a="log">Details</button>`;
+  }
+  if (j.state === 'fertig'){
+    state = 'fertig in ' + fmt(j.seconds || 0);
+    const s = j.summary || {};
+    msg = `<div class="stats"><div>♩ <b>${s.tempo || '–'}</b> BPM</div><div>Bass <b>${s.notes ?? '–'}</b> Noten</div><div>Schlagzeug <b>${s.hits ?? '–'}</b> Schläge</div><div>Länge <b>${s.duration ? fmt(s.duration) : '–'}</b></div></div>`
+        + (j.warning ? `<div class="warn">⚠︎ ${esc(j.warning)}</div>` : '');
+    acts = `<button class="primary" data-a="reveal">Im Finder zeigen</button><button data-a="practice">Übe-App öffnen</button><button class="link" data-a="log">Details</button>`;
+  }
+  if (j.state === 'fehler'){ state = 'Fehler'; msg = esc(j.error || 'Unbekannter Fehler'); acts = `<button data-a="log">Details anzeigen</button>`; }
+  if (j.state === 'abgebrochen'){ state = 'abgebrochen'; }
+  el.innerHTML = `<div class="top"><div class="name">${esc(j.name)}</div><div class="state">${state}</div></div>
+    ${j.state === 'abgebrochen' ? '' : `<div class="steps">${segs}</div><div class="labels">${labels}</div>`}
+    ${msg ? `<div class="msg">${msg}</div>` : ''}
+    ${acts ? `<div class="acts">${acts}</div>` : ''}
+    ${j.showLog ? `<pre class="log">${esc(j.log || '')}</pre>` : ''}`;
+  el.querySelectorAll('[data-a]').forEach(b => b.onclick = () => action(id, b.dataset.a));
+  const pre = el.querySelector('pre.log'); if (pre) pre.scrollTop = pre.scrollHeight;
+  $('#empty').style.display = Object.keys(jobs).length ? 'none' : '';
+  $('#drop').classList.toggle('compact', Object.keys(jobs).length > 0);
+  const waiting = Object.values(jobs).filter(x => x.state === 'wartet').length;
+  $('#queueInfo').textContent = waiting ? waiting + ' in der Warteschlange' : '';
+}
+
+async function action(id, a){
+  const j = jobs[id];
+  if (a === 'cancel') api.cancel(id);
+  if (a === 'reveal') api.reveal(j.zip);
+  if (a === 'practice'){ api.reveal(j.zip); api.open_practice(); }
+  if (a === 'log'){ if (!j.showLog && j.state !== 'läuft') j.log = await api.open_log(id); j.showLog = !j.showLog; render(id); }
+}
+
+window.onLaufbassEvent = ev => {
+  if (ev.type === 'toast') return toast(ev.text);
+  if (ev.type === 'added'){ jobs[ev.job.id] = Object.assign({step: 0, log: ''}, ev.job); render(ev.job.id); return; }
+  const j = jobs[ev.id]; if (!j) return;
+  if (ev.type === 'state'){ Object.assign(j, ev); delete j.type; if (ev.state === 'fertig' || ev.state === 'fehler') j.showLog = ev.state === 'fehler' ? j.showLog : false; }
+  if (ev.type === 'step'){ j.step = ev.step; j.sub = null; }
+  if (ev.type === 'sub'){ j.sub = ev.pct; }
+  if (ev.type === 'log'){ j.log = (j.log ? j.log + '\n' : '') + ev.line; }
+  render(ev.id);
+};
+setInterval(() => Object.values(jobs).filter(j => j.state === 'läuft').forEach(j => {
+  const el = document.querySelector('#job' + j.id + ' .state'); if (el) el.textContent = fmt(Date.now() / 1000 - j.started);
+}), 1000);
+
+function setOut(p){ const parts = (p || '').split('/').filter(Boolean); $('#outPath').textContent = p ? (parts.length > 2 ? '…/' : '/') + parts.slice(-2).join('/') : 'neben dem Original-Song'; $('#outPath').title = p || ''; $('#outReset').style.display = p ? '' : 'none'; }
+
+async function init(){
+  api = window.pywebview.api;
+  const st = await api.status();
+  setOut(st.outdir);
+  const n = [];
+  if (!st.ffmpeg) n.push('ffmpeg wurde nicht gefunden. Bitte <b>install.sh</b> noch einmal ausführen.');
+  if (!st.beatModel) n.push('Das Beat-Modell fehlt – die Takterkennung ist dann ungenauer. <b>install.sh</b> mit Internetverbindung erneut ausführen behebt das.');
+  $('#notices').innerHTML = n.map(t => `<div class="notice">${t}</div>`).join('');
+  $('#practiceBtn').style.display = st.practice ? '' : 'none';
+}
+$('#chooseBtn').onclick = () => api.choose_files();
+$('#outBtn').onclick = async () => setOut(await api.choose_outdir());
+$('#outReset').onclick = async () => setOut(await api.reset_outdir());
+$('#practiceBtn').onclick = () => api.open_practice();
+
+// Optik beim Ziehen (das eigentliche Ablegen verarbeitet Python mit vollen Pfaden)
+let dragDepth = 0;
+document.addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; $('#drop').classList.add('over'); });
+document.addEventListener('dragleave', () => { if (--dragDepth <= 0){ dragDepth = 0; $('#drop').classList.remove('over'); } });
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', () => { dragDepth = 0; $('#drop').classList.remove('over'); });
+
+if (window.pywebview && window.pywebview.api) init();
+else window.addEventListener('pywebviewready', init);
+</script>
+</body>
+</html>

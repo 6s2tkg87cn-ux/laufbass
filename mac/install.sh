@@ -138,9 +138,24 @@ else
   echo "   pruefen und install.sh erneut ausfuehren."
 fi
 
-chmod +x "$HIER/Laufbass vorbereiten.command" 2>/dev/null || true
+chmod +x "$HIER/Laufbass vorbereiten.command" "$HIER/build_app.sh" 2>/dev/null || true
+
+echo ""
+echo "App \"Laufbass Vorbereiten\" einrichten ..."
+if bash "$HIER/build_app.sh"; then
+  APP_OK=1
+else
+  APP_OK=0
+  echo "   WARNUNG: Die App konnte nicht angelegt werden. 'Laufbass vorbereiten.command' funktioniert weiterhin."
+fi
+
 echo ""
 echo "=============================================="
-echo "  Fertig! Jetzt kannst du 'Laufbass vorbereiten.command'"
-echo "  doppelklicken und einen Song auswaehlen."
+if [ "$APP_OK" = "1" ]; then
+  echo "  Fertig! Starte \"Laufbass Vorbereiten\" aus dem"
+  echo "  Programme-Ordner oder dem Launchpad."
+else
+  echo "  Fertig! Jetzt kannst du 'Laufbass vorbereiten.command'"
+  echo "  doppelklicken und einen Song auswaehlen."
+fi
 echo "=============================================="
