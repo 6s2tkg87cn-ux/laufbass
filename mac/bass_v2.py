@@ -97,6 +97,31 @@ def pyin_track(y: np.ndarray):
     return midi, np.nan_to_num(vprob)
 
 
+def crepe_track(y: np.ndarray, model: str = "full"):
+    """CREPE (neural f0 tracker) at FPS. Returns (midi float or nan, voicing confidence)."""
+    import torch
+    import torchcrepe
+    import librosa
+    y16 = librosa.resample(y, orig_sr=SR, target_sr=16000)
+    x = torch.from_numpy(y16.astype(np.float32))[None]
+    with torch.no_grad():
+        f0, per = torchcrepe.predict(x, 16000, hop_length=160, fmin=36.0, fmax=420.0, model=model,
+                                     decoder=torchcrepe.decode.viterbi, return_periodicity=True,
+                                     batch_size=1024, device="cpu")
+    f0, per = f0[0].numpy(), per[0].numpy()
+    per = torchcrepe.filter.median(torch.from_numpy(per)[None], 3)[0].numpy()
+    t_src = np.arange(len(f0)) * 0.01
+    n = int(np.ceil(len(y) / HOP)) + 1
+    t_dst = np.arange(n) / FPS
+    idx = np.clip(np.round(t_dst / 0.01).astype(int), 0, len(f0) - 1)
+    f, pr = f0[idx], per[idx]
+    midi = np.where((pr > 0.35) & (f > 0), librosa.hz_to_midi(np.maximum(f, 1.0)), np.nan)
+    return midi, pr
+
+
+PITCH_ENGINE = "pyin"   # "pyin" or "crepe"
+
+
 def transcribe(wav: Path, log=lambda m: None, return_debug: bool = False, keep_unsure: bool = False,
                beats=None):
     import librosa
@@ -114,7 +139,7 @@ def transcribe(wav: Path, log=lambda m: None, return_debug: bool = False, keep_u
 
     # --- estimators
     note_act, onset_act = basic_pitch_activations(wav)
-    midi_py, vprob = pyin_track(y)
+    midi_py, vprob = crepe_track(y) if PITCH_ENGINE == "crepe" else pyin_track(y)
 
     def fit(a, length):
         """basic-pitch frames are not evenly spaced in time (overlapping 2 s windows, ~0.5 % drift
