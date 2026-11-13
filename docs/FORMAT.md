@@ -28,6 +28,7 @@ drums.mid      Drums als MIDI (General-MIDI-Drum-Map, Kanal 10)
   "duration": 213.4,
   "tempo": 118.2,
   "timeSignature": [4, 4],
+  "beatMode": "fixed",
   "beats": [0.52, 1.03, 1.54],
   "firstDownbeat": 0,
   "stems": {
@@ -49,7 +50,9 @@ drums.mid      Drums als MIDI (General-MIDI-Drum-Map, Kanal 10)
 | Feld | Bedeutung |
 |---|---|
 | `duration` | Länge in Sekunden |
-| `tempo` | geschätztes Tempo in BPM |
+| `tempo` | Tempo in BPM (`60 / Schlagabstand`; bei `"variable"` der Mittelwert) |
+| `timeSignature` | Taktart `[Schläge pro Takt, 4]`; derzeit `[4, 4]` oder `[3, 4]` |
+| `beatMode` | optional: `"fixed"` = konstantes Tempo (Raster mit exakt gleichen Abständen) oder `"variable"` = Tempo schwankt, Abstände der `beats` sind unterschiedlich. Fehlt das Feld, gilt `"fixed"`. Die App darf in beiden Fällen einfach `beats` benutzen. |
 | `beats` | Zeitpunkte aller Schläge in Sekunden, aufsteigend |
 | `firstDownbeat` | Index in `beats`, der die erste „1“ eines Takts ist |
 | `bass.tuning` | MIDI-Tonhöhen der leeren Saiten, tiefste zuerst (Standard E1 A1 D2 G2) |

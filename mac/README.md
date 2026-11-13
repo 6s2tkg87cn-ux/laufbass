@@ -5,7 +5,8 @@ Dieses Werkzeug macht aus einem Song (MP3, M4A, WAV ...) ein **Laufbass-Paket**
 
 - vier getrennte Spuren: Bass, Schlagzeug, Gesang, Rest (als MP3)
 - die erkannte Basslinie und das erkannte Schlagzeug (als MIDI und für die App)
-- Tempo und Taktschläge
+- Tempo und Taktschläge (mit dem KI-Modell „Beat This!“ auf dem Original-Song bestimmt; bei gleichmäßigen Songs
+  wird daraus ein sauberes Raster mit konstantem Tempo gerechnet und auf die Schlagzeug-Einsätze ausgerichtet)
 
 Alles läuft **lokal auf deinem Mac** – nichts wird hochgeladen.
 
@@ -57,9 +58,11 @@ Das Fenster bitte währenddessen offen lassen; das MacBook zieht dabei Strom und
   **Toms, Ride, offene Hi-Hat** werden nicht erkannt. Bei dichten Fills, leisen Ghost-Notes
   und Hi-Hat genau unter der Snare sind Fehler normal. Rechne mit einem Rohentwurf, nicht mit Perfektion.
 - **Tempo/Takt:** Das Tempo wird automatisch bestimmt und kann bei manchen Songs doppelt oder halb
-  so groß sein. Die „Eins" des Takts wird über die Bassdrum geraten. Songs mit Tempowechseln
-  oder ohne feste Zählzeit funktionieren schlecht.
-- Es wird immer von 4/4 ausgegangen.
+  so groß sein. Die „Eins" des Takts kommt aus dem Beat-Modell (Takte mit 3 oder 4 Schlägen). Bei
+  Songs mit Tempowechseln wird das Raster abschnittsweise geglättet (`beatMode: variable`).
+  Im Terminal steht, ob ein festes oder variables Raster gewählt wurde und wie stark die Roh-Schläge abwichen.
+  Falls das Beat-Modell nicht geladen werden kann, erscheint eine Warnung und es wird ein einfacheres Verfahren benutzt.
+- Erkannt werden 4/4 und 3/4; andere Taktarten werden als 4/4 behandelt.
 
 ## Noten in Logic korrigieren und neu laden
 

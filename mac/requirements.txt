@@ -6,11 +6,21 @@
 # - basic-pitch 0.4.0 zieht auf macOS mit Python 3.11 KEIN TensorFlow nach (nur coremltools).
 #   Das Skript nutzt das mitgelieferte ONNX-Modell ueber onnxruntime (stabil auf Apple Silicon);
 #   coremltools bleibt als Ausweich-Backend.
-# - torchaudio wird NICHT gebraucht (Demucs 4.1 nutzt es nur zum Trainieren).
+# - torchaudio wird von Demucs nicht gebraucht, aber von Beat This! (Mel-Spektrogramm). Version muss
+#   exakt zu torch passen (2.5.1), sonst zieht pip ein neueres torch nach.
+# - Beat This! (CPJKU, ISMIR 2024) ist auf PyPI als "beat_this" verfuegbar (reines Python-Wheel).
+#   Seine Abhaengigkeiten sind unten festgelegt (einops, rotary-embedding-torch, soxr).
+#   Die Modellgewichte (final0.ckpt, ca. 80 MB) werden von install.sh vorab geladen.
 # - setuptools<81 weil pretty_midi noch pkg_resources importiert.
 
 torch==2.5.1
+torchaudio==2.5.1
 demucs==4.1.0
+
+beat_this==1.1.0
+einops==0.8.0
+rotary-embedding-torch==0.8.6
+soxr==0.5.0.post1
 
 basic-pitch==0.4.0
 onnxruntime==1.19.2

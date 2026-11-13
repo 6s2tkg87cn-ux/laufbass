@@ -84,7 +84,7 @@ echo "Schritt 4/5: Pakete installieren (beim ersten Mal ca. 1 GB, 5-10 Minuten) 
 
 # --- 5) Modell vorab laden --------------------------------------------------
 echo ""
-echo "Schritt 5/5: KI-Modell laden und testen (ca. 80 MB, Internet noetig) ..."
+echo "Schritt 5/5: KI-Modelle laden und testen (ca. 160 MB, Internet noetig) ..."
 "$VENV/bin/python" - <<'PYEOF'
 import sys, warnings
 warnings.filterwarnings("ignore")
@@ -110,6 +110,33 @@ except Exception as e:
     print("   und starte install.sh erneut.")
     sys.exit(2)
 PYEOF
+
+# --- 5b) Beat-Modell vorab laden --------------------------------------------
+echo ""
+echo "   Beat-Modell (Beat This!) laden und testen ..."
+if "$VENV/bin/python" - <<'PYEOF'
+import sys, warnings
+warnings.filterwarnings("ignore")
+try:
+    import numpy as np
+    from beat_this.inference import Audio2Beats
+    # laedt die Gewichte (final0) beim ersten Mal aus dem Internet und legt sie im Cache ab
+    tracker = Audio2Beats(checkpoint_path="final0", device="cpu")
+    rng = np.random.RandomState(0)
+    tracker(rng.randn(22050 * 8).astype("float32") * 0.1, 22050)
+    print("   Beat-Modell OK")
+except Exception as e:
+    print("   WARNUNG: Das Beat-Modell konnte nicht geladen werden:", e)
+    sys.exit(3)
+PYEOF
+then
+  :
+else
+  echo ""
+  echo "   WARNUNG: Das Beat-Modell fehlt. Laufbass funktioniert trotzdem, nutzt dann aber ein"
+  echo "   einfacheres Verfahren fuer die Taktschlaege (weniger genau). Bitte Internetverbindung"
+  echo "   pruefen und install.sh erneut ausfuehren."
+fi
 
 chmod +x "$HIER/Laufbass vorbereiten.command" 2>/dev/null || true
 echo ""

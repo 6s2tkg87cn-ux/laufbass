@@ -10,7 +10,7 @@ Pipeline:
     1. Stems trennen        (Demucs htdemucs: bass / drums / vocals / other)
     2. Bass transkribieren  (Spotify basic-pitch, danach monophon bereinigt)
     3. Drums transkribieren (librosa, Frequenzband-Onsets; austauschbar)
-    4. Beats + Tempo        (librosa)
+    4. Beats + Tempo        (Beat This! auf dem Mix, dann Raster-Glaettung + Phasenkorrektur)
     5. MIDI + song.json + ZIP schreiben
 
 Aufruf:
@@ -108,7 +108,10 @@ def write_wav(path: Path, data: np.ndarray, sr: int) -> None:
 def encode_mp3(src: Path, dst: Path, bitrate_kbps: int = 256) -> None:
     ffmpeg = check_ffmpeg()
     cmd = [ffmpeg, "-y", "-v", "error", "-i", str(src), "-vn", "-codec:a", "libmp3lame",
-           "-b:a", f"{bitrate_kbps}k", "-map_metadata", "-1", str(dst)]
+           "-b:a", f"{bitrate_kbps}k", "-map_metadata", "-1",
+           # Xing/LAME-Header mit Encoder-Delay und Padding: Browser schneiden damit die Verzoegerung
+           # des MP3-Encoders weg (sonst waeren die Stems ca. 25 ms gegen das Raster verschoben)
+           "-write_xing", "1", str(dst)]
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if proc.returncode != 0:
         raise LaufbassError("MP3-Kodierung fehlgeschlagen: " + proc.stderr.decode("utf-8", "replace")[:300])
@@ -584,23 +587,272 @@ def _detect_crashes(y: np.ndarray, sr: int, cand: list[tuple[int, float]], fs: f
 
 
 # --------------------------------------------------------------------------
-# Schritt 4: Beats / Tempo / erster Taktschlag
+# Schritt 4: Beats / Tempo / Takt
+#   a) Rohe Schlaege + Downbeats vom KI-Modell "Beat This!" (Mix, nicht Stem)
+#      - Ausweichloesung: librosa
+#   b) Raster-Glaettung: konstantes Tempo (robuste Regression) oder gleitende Regression
+#   c) Phasenkorrektur gegen die Schlagzeug-Onsets (Kick/Snare)
+#   d) Taktart und erste "Eins" aus den Modell-Downbeats
 # --------------------------------------------------------------------------
-def track_beats(mix_mono: np.ndarray, sr: int) -> tuple[float, np.ndarray]:
+BEAT_FIXED_RMS_MS = 25.0   # Rest-Abweichung, unter der ein festes Raster gewaehlt wird
+PHASE_MAX_SHIFT_S = 0.040  # Suchbereich der Phasenkorrektur (+-40 ms)
+# Systematischer Versatz zwischen Flux-Peak und echtem Einsatz (s). Mit mac/dev/synth_test.py
+# (bekannte Kicks/Snares) gemessen: ca. -1 ms, also deutlich unter einem Frame (5,8 ms) -> 0.
+ENV_LAG_S = 0.0
+
+
+def detect_beats_beat_this(mix: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]:
+    """Beat This! (CPJKU, ISMIR 2024) on the full mix. Returns (beats, downbeats) in seconds."""
+    try:
+        import torch  # noqa: F401
+        from beat_this.inference import Audio2Beats
+    except Exception as e:
+        raise LaufbassError(f"Das Beat-Modell (beat_this) konnte nicht geladen werden ({e}).")
+    try:
+        # CPU: das Modell ist klein (ca. 20 MB), ein Song dauert nur wenige Sekunden - und die CPU ist
+        # zuverlaessiger als MPS (Rotary-Embeddings). Beim ersten Mal wird der Checkpoint geladen.
+        tracker = Audio2Beats(checkpoint_path="final0", device="cpu", float16=False, dbn=False)
+    except Exception as e:
+        raise LaufbassError(
+            f"Die Gewichte des Beat-Modells konnten nicht geladen werden ({e}). "
+            "Beim ersten Start wird eine Internetverbindung gebraucht.")
+    try:
+        beats, downbeats = tracker(np.ascontiguousarray(mix, dtype=np.float32), sr)
+    except Exception as e:
+        raise LaufbassError(f"Die Beat-Erkennung (beat_this) ist fehlgeschlagen ({e}).")
+    return np.asarray(beats, dtype=float), np.asarray(downbeats, dtype=float)
+
+
+def detect_beats_librosa(mix: np.ndarray, sr: int) -> np.ndarray:
     import librosa
-    y = librosa.resample(mix_mono, orig_sr=sr, target_sr=22050) if sr != 22050 else mix_mono
+    y = librosa.resample(mix, orig_sr=sr, target_sr=22050) if sr != 22050 else mix
     hop = 256
     oenv = librosa.onset.onset_strength(y=y, sr=22050, hop_length=hop)
-    tempo, beat_frames = librosa.beat.beat_track(onset_envelope=oenv, sr=22050, hop_length=hop, units="frames")
-    beats = librosa.frames_to_time(beat_frames, sr=22050, hop_length=hop)
-    tempo = float(np.atleast_1d(tempo)[0])
-    if len(beats) >= 8:
-        tempo = float(60.0 / np.median(np.diff(beats)))
-    return tempo, np.asarray(beats, dtype=float)
+    _, beat_frames = librosa.beat.beat_track(onset_envelope=oenv, sr=22050, hop_length=hop, units="frames")
+    return np.asarray(librosa.frames_to_time(beat_frames, sr=22050, hop_length=hop), dtype=float)
+
+
+def detect_beats(mix: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray | None, str]:
+    """Returns (raw beats, model downbeats or None, engine name)."""
+    try:
+        beats, downbeats = detect_beats_beat_this(mix, sr)
+        if len(beats) < 8:
+            raise LaufbassError("das Modell hat zu wenige Schlaege gefunden")
+        return beats, downbeats, "beat_this"
+    except LaufbassError as e:
+        say(f"   WARNUNG: {e}")
+        say("   Es wird ersatzweise das einfachere Verfahren (librosa) benutzt - das Raster kann dann")
+        say("   weniger genau sein und die erste '1' wird nur geraten. Bitte install.sh erneut ausfuehren.")
+        return detect_beats_librosa(mix, sr), None, "librosa"
+
+
+def clean_beat_sequence(beats: np.ndarray) -> np.ndarray:
+    """Insert beats missing in gaps of ~2x the local interval, drop beats that follow far too early."""
+    from scipy.ndimage import median_filter
+    b = np.sort(np.asarray(beats, dtype=float))
+    if len(b) < 5:
+        return b
+    d = np.diff(b)
+    loc = median_filter(d, size=9, mode="nearest")  # local interval, index i = after beat i
+    out = [b[0]]
+    for i in range(1, len(b)):
+        L = loc[i - 1]
+        gap = b[i] - out[-1]
+        r = int(round(gap / L)) if L > 0 else 1
+        if r >= 2 and abs(gap / r - L) < 0.25 * L:
+            out.extend(out[-1] + gap * np.arange(1, r) / r)
+            out.append(b[i])
+        elif gap < 0.5 * L:
+            continue  # spurious extra beat
+        else:
+            out.append(b[i])
+    return np.asarray(out, dtype=float)
+
+
+def _robust_line(x: np.ndarray, y: np.ndarray, w0: np.ndarray | None = None,
+                 floor_s: float = 0.004) -> tuple[float, float, np.ndarray]:
+    """y ~ a + c*x by iteratively reweighted least squares (Huber, then Tukey). Returns (a, c, residuals)."""
+    w = np.ones(len(x)) if w0 is None else w0.astype(float).copy()
+
+    def wfit(w):
+        sw = w.sum()
+        if sw <= 0:
+            return None
+        xm, ym = (w * x).sum() / sw, (w * y).sum() / sw
+        var = (w * (x - xm) ** 2).sum()
+        c = (w * (x - xm) * (y - ym)).sum() / var if var > 0 else 0.0
+        return ym - c * xm, c
+
+    base = w.copy()
+    a, c = wfit(base)
+    for kind, iters in (("huber", 12), ("tukey", 12)):
+        for _ in range(iters):
+            res = y - (a + c * x)
+            s = max(1.4826 * float(np.median(np.abs(res[base > 0]))), floor_s)
+            u = np.abs(res) / s
+            if kind == "huber":
+                k = 1.345
+                rw = np.where(u <= k, 1.0, k / np.maximum(u, 1e-9))
+            else:
+                k = 4.685
+                rw = np.where(u < k, (1 - (u / k) ** 2) ** 2, 0.0)
+            w = base * rw
+            if (w > 1e-6).sum() < max(3, 0.3 * (base > 0).sum()):
+                break
+            a, c = wfit(w)
+    return a, c, y - (a + c * x)
+
+
+def _trimmed_rms(res: np.ndarray, keep: float = 0.9) -> float:
+    r = np.sort(np.abs(res))
+    r = r[: max(3, int(np.ceil(keep * len(r))))]
+    return float(np.sqrt(np.mean(r ** 2)))
+
+
+def _robust_poly_at0(xs: np.ndarray, ys: np.ndarray, w0: np.ndarray, deg: int = 2,
+                     floor_s: float = 0.004) -> float:
+    """Weighted robust (Tukey) polynomial fit of ys over xs; returns the fitted value at x = 0."""
+    A = np.vander(xs, deg + 1, increasing=True)
+    w = w0.copy()
+    coef = None
+    for it in range(8):
+        sw = np.sqrt(w)
+        coef = np.linalg.lstsq(A * sw[:, None], ys * sw, rcond=None)[0]
+        res = ys - A @ coef
+        s = max(1.4826 * float(np.median(np.abs(res))), floor_s)
+        u = np.abs(res) / (4.685 * s)
+        w = w0 * np.where(u < 1, (1 - u ** 2) ** 2, 0.0)
+        if (w > 1e-6).sum() < deg + 3:
+            break
+    return float(coef[0])
+
+
+def smooth_variable_grid(b: np.ndarray, half_window: int = 16) -> np.ndarray:
+    """Moving robust regression (local line + curvature) over +-half_window beats (~8 bars in 4/4):
+    follows tempo changes but removes the frame-to-frame jitter of the detector. The curvature term
+    keeps the result unbiased during accelerando / ritardando."""
+    n = len(b)
+    x = np.arange(n, dtype=float)
+    out = np.empty(n)
+    full = 2 * half_window + 1
+    for i in range(n):
+        lo, hi = max(0, i - half_window), min(n, i + half_window + 1)
+        if hi - lo < full:  # edges: keep the window size by shifting it
+            if lo == 0:
+                hi = min(n, full)
+            else:
+                lo = max(0, n - full)
+        xs, ys = x[lo:hi] - i, b[lo:hi]
+        if len(xs) < 6:
+            out[i] = b[i]
+            continue
+        tri = np.clip((1 - (np.abs(xs) / (half_window + 1)) ** 3) ** 3, 1e-3, None)  # tricube weights
+        out[i] = _robust_poly_at0(xs, ys - b[i], tri) + b[i]
+    return out
+
+
+def combined_onset_env(drum_env: dict[str, np.ndarray]) -> np.ndarray:
+    """Kick-weighted onset strength: kick + snare (noise band) + a little hi-hat, each normalised."""
+    parts = []
+    for name, wgt in (("kick", 1.0), ("snare_noise", 0.7), ("snare_body", 0.3), ("hihat", 0.2)):
+        e = drum_env.get(name)
+        if e is None or len(e) == 0:
+            continue
+        ref = float(np.percentile(e, 99)) or 1.0
+        parts.append(wgt * np.minimum(e / ref, 2.0))
+    if not parts:
+        return np.zeros(1)
+    n = min(len(p) for p in parts)
+    return np.sum([p[:n] for p in parts], axis=0)
+
+
+def refine_phase(beats: np.ndarray, env: np.ndarray, fs: float, weight_mask: np.ndarray | None = None,
+                 max_shift: float = PHASE_MAX_SHIFT_S) -> float:
+    """Constant offset (s) that moves the grid onto the onset-strength peaks (+-max_shift)."""
+    from scipy.ndimage import gaussian_filter1d
+    if len(env) < 10 or float(np.max(env)) <= 0 or len(beats) < 4:
+        return 0.0
+    e = gaussian_filter1d(env, 1.0)
+    times = np.arange(len(e)) * fs
+    sel = beats if weight_mask is None else beats[weight_mask]
+    sel = sel[(sel > max_shift) & (sel < times[-1] - max_shift)]
+    if len(sel) < 4:
+        return 0.0
+    shifts = np.arange(-round(max_shift * 1000), round(max_shift * 1000) + 1) / 1000.0
+    score = np.array([np.interp(sel + s + ENV_LAG_S, times, e).mean() for s in shifts])
+    j = int(np.argmax(score))
+    if j == 0 or j == len(shifts) - 1:
+        return 0.0  # peak at the edge of the search range -> not trustworthy
+    if score[j] < 1.1 * float(np.median(score)):
+        return 0.0  # no clear peak
+    # parabolic interpolation around the maximum
+    y0, y1, y2 = score[j - 1], score[j], score[j + 1]
+    den = y0 - 2 * y1 + y2
+    frac = 0.5 * (y0 - y2) / den if den < 0 else 0.0
+    return float((shifts[j] + frac * 0.001))
+
+
+def regularize_beats(raw: np.ndarray, duration: float, env: np.ndarray | None = None,
+                     fs: float = 0.0, log=None) -> dict:
+    """Raw detector beats -> clean grid. Returns dict(beats, tempo, mode, rms_ms, offset_ms)."""
+    log = log or (lambda m: None)
+    b = clean_beat_sequence(raw)
+    if len(b) < 4:
+        raise LaufbassError("Es wurden zu wenige Schlaege gefunden, um ein Raster zu bestimmen.")
+    x = np.arange(len(b), dtype=float)
+    a, T, res = _robust_line(x, b)
+    rms = _trimmed_rms(res) * 1000.0
+    first_t, last_t = float(b[0]), float(b[-1])
+    if rms < BEAT_FIXED_RMS_MS:
+        mode = "fixed"
+        k0 = int(np.ceil(-a / T - 1e-9))              # first grid point at t >= 0
+        k1 = int(np.floor((duration - a) / T + 1e-9))  # last grid point inside the song
+        grid = a + T * np.arange(k0, k1 + 1)
+        tempo = 60.0 / T
+        log(f"Festes Tempo erkannt: Raster mit {tempo:.2f} BPM, Abweichung der Roh-Schlaege "
+            f"{rms:.1f} ms (Grenze {BEAT_FIXED_RMS_MS:.0f} ms).")
+    else:
+        mode = "variable"
+        grid = smooth_variable_grid(b)
+        tempo = 60.0 / float(np.median(np.diff(grid)))
+        log(f"Tempo schwankt (Abweichung vom festen Raster {rms:.1f} ms > {BEAT_FIXED_RMS_MS:.0f} ms): "
+            f"Raster wird abschnittsweise (ca. 8 Takte) geglaettet, mittleres Tempo {tempo:.2f} BPM.")
+    offset = 0.0
+    if env is not None and fs > 0:
+        mask = (grid >= first_t - 0.25 * (60.0 / tempo)) & (grid <= last_t + 0.25 * (60.0 / tempo))
+        offset = refine_phase(grid, env, fs, mask)
+        if abs(offset) > 1e-4:
+            grid = grid + offset
+            log(f"Phasenkorrektur gegen die Schlagzeug-Einsaetze: Raster um {offset * 1000:+.1f} ms verschoben.")
+        else:
+            log("Phasenkorrektur: Raster liegt bereits auf den Schlagzeug-Einsaetzen (kein Versatz).")
+    grid = grid[(grid >= 0.0) & (grid <= duration)]
+    return {"beats": grid, "tempo": float(tempo), "mode": mode, "rms_ms": float(rms),
+            "offset_ms": offset * 1000.0}
+
+
+def analyze_bars(beats: np.ndarray, downbeats: np.ndarray | None) -> tuple[int, int] | None:
+    """(first_downbeat_index, beats_per_bar) from the model downbeats, or None if unusable."""
+    if downbeats is None or len(downbeats) < 3 or len(beats) < 8:
+        return None
+    T = float(np.median(np.diff(beats)))
+    idx = []
+    for d in downbeats:
+        j = int(np.argmin(np.abs(beats - d)))
+        if abs(beats[j] - d) <= 0.5 * T:
+            idx.append(j)
+    idx = np.unique(idx)
+    if len(idx) < 3:
+        return None
+    gaps = np.diff(idx)
+    c3, c4 = int(np.sum(gaps == 3)), int(np.sum(gaps == 4))
+    bpb = 3 if (c3 >= 3 and c3 >= 0.75 * len(gaps)) else 4
+    phase = np.bincount(idx % bpb, minlength=bpb)
+    return int(np.argmax(phase)), bpb
 
 
 def find_first_downbeat(beats: np.ndarray, kick_env: np.ndarray, frame_s: float, beats_per_bar: int = 4) -> int:
-    """Index (0..3) whose beats carry the highest average kick strength."""
+    """Fallback without model downbeats: index (0..3) whose beats carry the highest average kick strength."""
     if len(beats) < beats_per_bar:
         return 0
     strengths = []
@@ -637,7 +889,8 @@ def write_drums_midi(path: Path, hits: list[DrumHit], tempo: float) -> None:
 
 
 def build_song_json(title: str, source: str, duration: float, tempo: float, beats: np.ndarray,
-                    first_downbeat: int, stems: list[str], notes: list[Note], hits: list[DrumHit]) -> dict:
+                    first_downbeat: int, stems: list[str], notes: list[Note], hits: list[DrumHit],
+                    beats_per_bar: int = 4, beat_mode: str = "fixed") -> dict:
     r3 = lambda x: round(float(x), 3)
     return {
         "format": FORMAT_NAME,
@@ -646,7 +899,8 @@ def build_song_json(title: str, source: str, duration: float, tempo: float, beat
         "source": source,
         "duration": r3(duration),
         "tempo": round(float(tempo), 1),
-        "timeSignature": [4, 4],
+        "timeSignature": [int(beats_per_bar), 4],
+        "beatMode": beat_mode,
         "beats": [r3(b) for b in sorted(beats)],
         "firstDownbeat": int(first_downbeat),
         "stems": {s: f"{s}.mp3" for s in STEM_NAMES if s in stems},
@@ -711,12 +965,25 @@ def process_file(audio: Path, out_dir: Path, model: str = "htdemucs", keep_temp:
         t0 = step(4, TOTAL, "Tempo und Taktschlaege bestimmen ...")
         mix = load_audio_ffmpeg(audio, SEP_SR, 1)[0]
         duration = len(mix) / SEP_SR
-        tempo, beats = track_beats(mix, SEP_SR)
+        # Beat-Modell laeuft auf dem kompletten Original-Mix (nicht auf einem Stem)
+        say("   Suche Schlaege im Original-Mix ...")
+        raw_beats, raw_downbeats, engine = detect_beats(mix, SEP_SR)
+        say(f"   {len(raw_beats)} Roh-Schlaege ({'Beat This!' if engine == 'beat_this' else 'librosa'})")
         import librosa
         d_y, _ = librosa.load(str(stems["drums"]), sr=SEP_SR, mono=True)
         env, fs = drum_band_envelopes(d_y, SEP_SR)
-        first_db = find_first_downbeat(beats, env["kick"], fs)
-        say(f"   Tempo ca. {tempo:.1f} BPM, {len(beats)} Schlaege, erste '1' = Schlag {first_db + 1}")
+        beat_env = combined_onset_env(env)
+        grid = regularize_beats(raw_beats, duration, beat_env, fs, log=lambda m: say("   " + m))
+        beats, tempo, beat_mode = grid["beats"], grid["tempo"], grid["mode"]
+        bars = analyze_bars(beats, raw_downbeats)
+        if bars is None:
+            first_db, beats_per_bar = find_first_downbeat(beats, env["kick"], fs), 4
+            how = "geraten ueber die Bassdrum"
+        else:
+            first_db, beats_per_bar = bars
+            how = "aus den Modell-Downbeats"
+        say(f"   Tempo {tempo:.1f} BPM, {beats_per_bar}/4-Takt, {len(beats)} Schlaege, "
+            f"erste '1' = Schlag {first_db + 1} ({how})")
         done(t0)
 
         # 5) package
@@ -732,7 +999,8 @@ def process_file(audio: Path, out_dir: Path, model: str = "htdemucs", keep_temp:
         write_bass_midi(tmp / "bass.mid", notes, tempo)
         write_drums_midi(tmp / "drums.mid", hits, tempo)
         files["bass.mid"], files["drums.mid"] = tmp / "bass.mid", tmp / "drums.mid"
-        song = build_song_json(title, audio.name, duration, tempo, beats, first_db, list(stems), notes, hits)
+        song = build_song_json(title, audio.name, duration, tempo, beats, first_db, list(stems), notes, hits,
+                               beats_per_bar, beat_mode)
         (tmp / "song.json").write_text(json.dumps(song, ensure_ascii=False, indent=1), encoding="utf-8")
         files["song.json"] = tmp / "song.json"
         write_package(zip_path, files)
