@@ -113,6 +113,11 @@ input[type=range]{accent-color:var(--accent);height:28px}
       <button data-s="5">5</button>
     </div>
   </div>
+  <div class="grp" title="Verschiebt die Anzeige gegenüber dem Ton (Plus = Noten kommen früher)" style="display:flex;align-items:center;gap:6px">
+    <span class="lbl">Sync</span>
+    <input type="range" id="sync" min="-200" max="200" step="10" value="0" style="width:90px">
+    <span id="syncVal" class="lbl" style="min-width:52px">0 ms</span>
+  </div>
   <div class="seg" title="Zoom">
     <button id="zoomOut">−</button>
     <button id="zoomIn">+</button>
@@ -333,8 +338,10 @@ function computeFingering(notes, tuning, maxFret = 20){
 /* ---------------- Song-Modell ---------------- */
 const app = {
   song: null, mode: 'bass', label: 'fret', strings: 4, pps: 160,
-  loop: {on: false, a: 0, b: 0}, click: false, countIn: true, libId: null,
+  loop: {on: false, a: 0, b: 0}, click: false, countIn: true, libId: null, offset: 0,
 };
+function loadOffset(){ try { app.offset = +(localStorage.getItem('laufbass.offset.' + app.song.title) || 0); } catch (e){ app.offset = 0; } $('#sync').value = app.offset; $('#syncVal').textContent = (app.offset > 0 ? '+' : '') + app.offset + ' ms'; }
+function saveOffset(){ try { localStorage.setItem('laufbass.offset.' + app.song.title, app.offset); } catch (e){} }
 
 function normalizeSong(s){
   s.bass = s.bass || {notes: []}; s.drums = s.drums || {hits: []};
@@ -369,116 +376,201 @@ function applyMidi(song, midi, fileName){
   if (msgs.length) toast(fileName + ': ' + msgs.join(', ') + ' übernommen');
 }
 
-/* ---------------- Audio-Engine ---------------- */
-const engine = {
-  ctx: null, stems: {}, master: null, playing: false, rate: 1,
-  vpos: 0, vStart: 0, lastCt: -1, lastNow: 0, syncTimer: null, nextClickIdx: 0,
-  ensureCtx(){
-    if (!this.ctx){ const AC = window.AudioContext || window.webkitAudioContext; this.ctx = new AC(); }
-    if (this.ctx.state === 'suspended') this.ctx.resume();
-    for (const k in this.stems){
-      const st = this.stems[k];
-      if (!st.gain){
-        st.src = this.ctx.createMediaElementSource(st.el);
-        st.gain = this.ctx.createGain();
-        st.src.connect(st.gain).connect(this.ctx.destination);
-        this.applyGain(k);
+/* ---------------- Audio-Engine ----------------
+   Alle Spuren als AudioBuffer, gestartet auf exakt demselben Sample.
+   Langsameres Tempo: eigenes Time-Stretching (WSOLA) im Worker, Ergebnis je Tempo zwischengespeichert. */
+const WSOLA_SRC = `
+function wsola(chs, rate){
+  const N = 2048, Hs = 1024, tol = 512;
+  const len = chs[0].length, outLen = Math.ceil(len / rate) + N;
+  const out = chs.map(() => new Float32Array(outLen));
+  const norm = new Float32Array(outLen);
+  const win = new Float32Array(N);
+  for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
+  let mono = chs[0];
+  if (chs.length > 1){ mono = new Float32Array(len); for (let i = 0; i < len; i++) mono[i] = (chs[0][i] + chs[1][i]) * 0.5; }
+  let prev = 0;
+  for (let k = 0; ; k++){
+    const outPos = k * Hs, nom = Math.round(k * Hs * rate);
+    if (nom + N >= len || outPos + N >= outLen) break;
+    let best = 0;
+    const target = prev + Hs;
+    if (k > 0 && target + N < len){
+      let bc = -Infinity;
+      for (let d = -tol; d <= tol; d += 8){
+        const p = nom + d; if (p < 0 || p + N > len) continue;
+        let s = 0; for (let i = 0; i < N; i += 16) s += mono[target + i] * mono[p + i];
+        if (s > bc){ bc = s; best = d; }
       }
+      const c0 = best; bc = -Infinity;
+      for (let d = c0 - 7; d <= c0 + 7; d++){
+        const p = nom + d; if (p < 0 || p + N > len) continue;
+        let s = 0; for (let i = 0; i < N; i += 4) s += mono[target + i] * mono[p + i];
+        if (s > bc){ bc = s; best = d; }
+      }
+    }
+    const p = Math.max(0, Math.min(len - N, nom + best));
+    for (let c = 0; c < chs.length; c++){ const o = out[c], src = chs[c]; for (let i = 0; i < N; i++) o[outPos + i] += src[p + i] * win[i]; }
+    for (let i = 0; i < N; i++) norm[outPos + i] += win[i];
+    prev = p;
+  }
+  for (let i = 0; i < outLen; i++){ const n = norm[i]; if (n > 0.05) for (let c = 0; c < out.length; c++) out[c][i] /= n; }
+  return out;
+}
+self.onmessage = e => { const out = wsola(e.data.chs, e.data.rate); self.postMessage({out}, out.map(a => a.buffer)); };
+`;
+let wsolaFn = null;
+function stretchBuffer(ctx, buf, rate){
+  const chs = []; for (let c = 0; c < buf.numberOfChannels; c++) chs.push(buf.getChannelData(c).slice());
+  const make = out => { const b = ctx.createBuffer(out.length, out[0].length, buf.sampleRate); out.forEach((a, c) => b.copyToChannel ? b.copyToChannel(a, c) : b.getChannelData(c).set(a)); return b; };
+  return new Promise(res => {
+    try {
+      const w = new Worker(URL.createObjectURL(new Blob([WSOLA_SRC], {type: 'text/javascript'})));
+      w.onmessage = e => { w.terminate(); res(make(e.data.out)); };
+      w.onerror = () => { w.terminate(); fallback(); };
+      w.postMessage({chs, rate}, chs.map(a => a.buffer));
+    } catch (e){ fallback(); }
+    function fallback(){
+      if (!wsolaFn) wsolaFn = new Function(WSOLA_SRC.replace(/self\.onmessage[\s\S]*$/, '') + ';return wsola;')();
+      const c2 = []; for (let c = 0; c < buf.numberOfChannels; c++) c2.push(buf.getChannelData(c).slice());
+      setTimeout(() => res(make(wsolaFn(c2, rate))), 10);
+    }
+  });
+}
+
+const engine = {
+  ctx: null, out: null, stems: {}, sources: [], cache: new Map(),
+  playing: false, rate: 1, activeRate: 1, vpos: 0,
+  anchorCtx: 0, anchorSong: 0, prev: null, pending: null, loopScheduled: false, nextClickIdx: 0, stretchJob: 0,
+  getCtx(){
+    if (!this.ctx){
+      const AC = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AC({latencyHint: 'interactive'});
+      this.out = this.ctx.createGain(); this.out.connect(this.ctx.destination);
+      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e){}
     }
     return this.ctx;
   },
+  async resume(){ const c = this.getCtx(); if (c.state !== 'running') { try { await c.resume(); } catch (e){} } return c; },
   clear(){
-    this.pause();
-    for (const k in this.stems){ const st = this.stems[k]; try { st.el.pause(); st.src && st.src.disconnect(); st.gain && st.gain.disconnect(); } catch (e) {} URL.revokeObjectURL(st.url); }
-    this.stems = {}; this.master = null; this.vpos = 0;
+    this.stopSources(); this.playing = false;
+    for (const k in this.stems) try { this.stems[k].gain.disconnect(); } catch (e){}
+    this.stems = {}; this.cache = new Map(); this.vpos = 0; this.rate = 1; this.activeRate = 1;
+    $('#tempo').value = 100; $('#tempoVal').textContent = '100 %';
   },
-  addStem(name, blob){
-    const url = URL.createObjectURL(blob);
-    const el = new Audio(); el.preload = 'auto'; el.src = url; el.playsInline = true;
-    el.preservesPitch = true; el.webkitPreservesPitch = true; el.mozPreservesPitch = true;
-    this.stems[name] = {el, url, vol: 1, muted: false, gain: null, src: null};
+  async addStem(name, blob){
+    const c = this.getCtx(); const ab = await blob.arrayBuffer();
+    const buf = await new Promise((res, rej) => c.decodeAudioData(ab, res, rej));
+    const gain = c.createGain(); gain.connect(this.out);
+    this.stems[name] = {buf, gain, vol: 1, muted: false};
   },
-  pickMaster(){
-    const order = ['other','vocals','drums','bass','mix'];
-    for (const k of order) if (this.stems[k]){ this.master = this.stems[k].el; return; }
-    this.master = null;
-  },
-  applyGain(name){
-    const st = this.stems[name]; if (!st) return;
-    const v = st.muted ? 0 : st.vol;
-    if (st.gain){ st.el.volume = 1; st.gain.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02); }
-    else st.el.volume = v;
-  },
-  els(){ return Object.values(this.stems).map(s => s.el); },
+  applyGain(name){ const st = this.stems[name]; if (st) st.gain.gain.setTargetAtTime(st.muted ? 0 : st.vol, this.ctx.currentTime, 0.015); },
+  hasAudio(){ return Object.keys(this.stems).length > 0; },
   duration(){
     if (app.song && app.song.duration) return app.song.duration;
-    if (this.master && isFinite(this.master.duration)) return this.master.duration;
-    return 0;
+    return Math.max(0, ...Object.values(this.stems).map(s => s.buf.duration));
   },
+  latency(){ const c = this.ctx; return c ? (c.outputLatency || 0) + (c.baseLatency || 0) : 0; },
+  _activate(){
+    if (this.pending && this.ctx.currentTime >= this.pending.ctx){
+      this.prev = {ctx: this.anchorCtx, song: this.anchorSong};
+      this.anchorCtx = this.pending.ctx; this.anchorSong = this.pending.song;
+      this.nextClickIdx = this.pending.clickIdx; this.sources = this.pending.fresh; this.pending = null; this.loopScheduled = false;
+    }
+  },
+  audioTime(){ if (!this.playing) return this.vpos; this._activate(); return this.anchorSong + (this.ctx.currentTime - this.anchorCtx) * this.activeRate; },
   time(){
     if (!this.playing) return this.vpos;
-    const now = performance.now();
-    if (!this.master) return this.vpos + (now - this.vStart) / 1000 * this.rate;
-    const ct = this.master.currentTime;
-    if (ct !== this.lastCt){ this.lastCt = ct; this.lastNow = now; }
-    const est = this.lastCt + Math.min(0.35, (now - this.lastNow) / 1000) * this.rate;
-    return est;
+    this._activate();
+    const heard = this.ctx.currentTime - this.latency();
+    if (heard < this.anchorCtx && this.prev) return this.prev.song + (heard - this.prev.ctx) * this.activeRate;
+    return Math.max(0, this.anchorSong + (heard - this.anchorCtx) * this.activeRate);
   },
-  setRate(r){
-    const t = this.time(); this.rate = r;
-    this.els().forEach(el => el.playbackRate = r);
-    if (!this.master && this.playing){ this.vpos = t; this.vStart = performance.now(); }
-    this.nextClickIdx = lowerBoundNum(app.song ? app.song.beats : [], t);
+  buffers(){ return this.activeRate === 1 ? Object.fromEntries(Object.entries(this.stems).map(([k, s]) => [k, s.buf])) : this.cache.get(this.activeRate); },
+  startSources(songPos, when){
+    const bufs = this.buffers(); const list = [];
+    for (const k in this.stems){
+      const b = bufs && bufs[k]; if (!b) continue;
+      const off = songPos / this.activeRate; if (off >= b.duration) continue;
+      const s = this.ctx.createBufferSource(); s.buffer = b; s.connect(this.stems[k].gain);
+      s.start(when, Math.max(0, off)); list.push(s);
+    }
+    return list;
   },
-  async play(){
-    this.ensureCtx();
-    const t = this.vpos;
-    this.els().forEach(el => { el.currentTime = t; el.playbackRate = this.rate; });
-    this.lastCt = -1; this.vStart = performance.now();
-    this.nextClickIdx = lowerBoundNum(app.song ? app.song.beats : [], t);
-    try { await Promise.all(this.els().map(el => el.play())); }
-    catch (e){ toast('Wiedergabe blockiert – bitte noch einmal tippen'); return; }
+  stopSources(at){ this.sources.forEach(s => { try { at ? s.stop(at) : s.stop(); } catch (e){} if (!at) try { s.disconnect(); } catch (e){} }); if (!at) this.sources = []; },
+  async play(when){
+    const c = await this.resume();
+    when = when || c.currentTime + 0.04;
+    this.stopSources();
+    this.sources = this.startSources(this.vpos, when);
+    this.anchorCtx = when; this.anchorSong = this.vpos; this.prev = null; this.pending = null; this.loopScheduled = false;
+    this.nextClickIdx = lowerBoundNum(app.song ? app.song.beats : [], this.vpos - 0.001);
     this.playing = true;
-    clearInterval(this.syncTimer);
-    this.syncTimer = setInterval(() => this.sync(), 200);
   },
   pause(){
-    if (this.playing) this.vpos = this.time();
-    this.playing = false;
-    this.els().forEach(el => el.pause());
-    clearInterval(this.syncTimer);
+    if (!this.playing) return;
+    this.vpos = clamp(this.time(), 0, this.duration()); this.playing = false; this.stopSources(); this.pending = null;
   },
   seek(t){
     t = clamp(t, 0, Math.max(0, this.duration() - 0.05));
-    this.vpos = t; this.vStart = performance.now(); this.lastCt = -1;
-    this.els().forEach(el => { try { el.currentTime = t; } catch (e) {} });
-    this.nextClickIdx = lowerBoundNum(app.song ? app.song.beats : [], t);
+    const was = this.playing;
+    if (was){ this.playing = false; this.stopSources(); }
+    this.vpos = t;
+    this.nextClickIdx = lowerBoundNum(app.song ? app.song.beats : [], t - 0.001);
+    if (was) this.play();
   },
-  sync(){
-    if (!this.playing || !this.master) return;
-    const mt = this.master.currentTime;
-    for (const el of this.els()){
-      if (el === this.master) continue;
-      if (Math.abs(el.currentTime - mt) > 0.06) el.currentTime = mt + 0.01;
-      if (el.paused && !this.master.paused) el.play().catch(() => {});
+  async setRate(r){
+    this.rate = r; const job = ++this.stretchJob;
+    if (r !== 1 && !this.cache.has(r) && this.hasAudio()){
+      ui.busy('Tempo ' + Math.round(r * 100) + ' % wird berechnet …');
+      const out = {}; const c = this.getCtx();
+      await Promise.all(Object.entries(this.stems).map(async ([k, s]) => { out[k] = await stretchBuffer(c, s.buf, r); }));
+      ui.busy(null);
+      if (this.cache.size >= 2) this.cache.delete(this.cache.keys().next().value);
+      this.cache.set(r, out);
+      if (job !== this.stretchJob) return;
     }
-    if (this.master.ended) { this.pause(); this.vpos = 0; ui.updatePlay(); }
+    const was = this.playing, t = was ? this.audioTime() : this.vpos;
+    if (was){ this.playing = false; this.stopSources(); }
+    this.activeRate = r; this.vpos = t;
+    if (was) this.play();
+  },
+  tick(){
+    if (!this.playing) return;
+    const t = this.audioTime(), L = app.loop, dur = this.duration();
+    if (L.on && L.b > L.a){
+      if (t >= L.b + 0.02 && !this.loopScheduled){ this.seek(L.a); return; }
+      if (!this.loopScheduled && t < L.b && (L.b - t) / this.activeRate < 0.3){
+        const whenB = this.ctx.currentTime + Math.max(0.005, (L.b - t) / this.activeRate);
+        this.stopSources(whenB);
+        const fresh = this.startSources(L.a, whenB);
+        this.sources = this.sources.concat(fresh);
+        this.pending = {ctx: whenB, song: L.a, fresh, clickIdx: lowerBoundNum(app.song.beats, L.a - 0.001)};
+        this.loopScheduled = true;
+      }
+    } else if (t >= dur){ this.pause(); this.vpos = 0; ui.updatePlay(); return; }
+    this.scheduleClicks();
   },
   click(when, accent){
-    const c = this.ctx; const o = c.createOscillator(), g = c.createGain();
+    const c = this.getCtx(); const o = c.createOscillator(), g = c.createGain();
     o.frequency.value = accent ? 1760 : 1175; o.type = 'square';
-    g.gain.setValueAtTime(0, when); g.gain.linearRampToValueAtTime(accent ? 0.35 : 0.22, when + 0.002);
+    g.gain.setValueAtTime(0, when); g.gain.linearRampToValueAtTime(accent ? 0.3 : 0.18, when + 0.002);
     g.gain.exponentialRampToValueAtTime(0.0001, when + 0.06);
     o.connect(g).connect(c.destination); o.start(when); o.stop(when + 0.08);
   },
-  scheduleClicks(t){
+  scheduleClicks(){
     if (!app.click || !this.playing || !app.song) return;
-    const beats = app.song.beats, bpb = app.song.timeSignature[0];
-    while (this.nextClickIdx < beats.length && beats[this.nextClickIdx] < t + 0.15 * this.rate){
-      const i = this.nextClickIdx++, bt = beats[i];
-      const dt = (bt - t) / this.rate;
-      if (dt >= -0.01) this.click(this.ctx.currentTime + Math.max(0, dt), ((i - app.song.firstDownbeat) % bpb + bpb) % bpb === 0);
-    }
+    const c = this.ctx, horizon = c.currentTime + 0.15, beats = app.song.beats, bpb = app.song.timeSignature[0], fd = app.song.firstDownbeat;
+    const seg = (aC, aS, endSong, obj, key) => {
+      while (obj[key] < beats.length){
+        const i = obj[key], b = beats[i]; if (b >= endSong) break;
+        const w = aC + (b - aS) / this.activeRate; if (w > horizon) break;
+        obj[key]++;
+        if (w >= c.currentTime - 0.005) this.click(Math.max(w, c.currentTime), ((i - fd) % bpb + bpb) % bpb === 0);
+      }
+    };
+    seg(this.anchorCtx, this.anchorSong, this.pending ? app.loop.b : Infinity, this, 'nextClickIdx');
+    if (this.pending) seg(this.pending.ctx, this.pending.song, Infinity, this.pending, 'clickIdx');
   },
 };
 
@@ -535,21 +627,22 @@ async function openFiles(fileList, {save = true, libId = null} = {}){
   }
 
   engine.clear();
-  for (const k of STEM_ORDER) if (stems[k]) engine.addStem(k, stems[k]);
-  engine.pickMaster();
+  ui.busy('Spuren werden geladen …');
+  try { for (const k of STEM_ORDER) if (stems[k]) await engine.addStem(k, stems[k]); }
+  catch (e){ ui.busy(null); toast('Audio konnte nicht gelesen werden: ' + (e && e.message || e), 4000); }
+  ui.busy(null);
   app.song = song;
   if (!song.duration){
     const last = Math.max(0, ...song.bass.notes.map(n => n.t + n.d), ...song.drums.hits.map(h => h.t + 0.5));
     song.duration = last + 2;
-    if (engine.master){
-      engine.master.addEventListener('loadedmetadata', () => { if (isFinite(engine.master.duration)) { song.duration = engine.master.duration; ui.refreshAll(); } }, {once: true});
-    }
+    if (engine.hasAudio()) song.duration = Math.max(...Object.values(engine.stems).map(x => x.buf.duration));
   }
   if (song.bass.tuning && song.bass.tuning.length === 5) app.strings = 5;
   computeFingering(song.bass.notes, TUNINGS[app.strings]);
   app.loop = {on: false, a: 0, b: 0};
   if (!song.bass.notes.length && song.drums.hits.length) setMode('drums');
   engine.seek(0);
+  loadOffset();
   ui.refreshAll();
   $('#empty').style.display = 'none';
   if (save){ app.libId = await lib.save(song.title, originals); }
@@ -868,6 +961,7 @@ function emptyMsg(ctx, w, h, msg){ ctx.fillStyle = '#6c7487'; ctx.font = '15px -
 /* ---------------- UI ---------------- */
 const ui = {
   dragging: false,
+  busy(msg){ const t = $('#toast'); clearTimeout(toast._t); if (msg){ t.textContent = msg; t.classList.add('show'); } else t.classList.remove('show'); },
   updatePlay(){ $('#playBtn').textContent = engine.playing ? '❚❚' : '▶'; },
   refreshAll(){
     const s = app.song;
@@ -945,26 +1039,27 @@ async function togglePlay(){
   if (!app.song || counting) return;
   if (engine.playing){ engine.pause(); ui.updatePlay(); return; }
   if (app.loop.on && (engine.vpos < app.loop.a || engine.vpos >= app.loop.b)) engine.seek(app.loop.a);
+  const ctx = await engine.resume();
+  let when = ctx.currentTime + 0.06;
   if (app.countIn){
-    const ctx = engine.ensureCtx();
-    const tempo = (app.song.tempo || 100) * engine.rate; const step = 60 / tempo; const n = app.song.timeSignature[0];
+    const beats = app.song.beats, i = clamp(lowerBoundNum(beats, engine.vpos), 1, Math.max(1, beats.length - 1));
+    const ibi = beats.length > 1 ? beats[i] - beats[i - 1] : 60 / (app.song.tempo || 100);
+    const step = ibi / engine.activeRate, n = app.song.timeSignature[0];
     counting = true; $('#playBtn').textContent = '…';
-    const t0 = ctx.currentTime + 0.1; const cd = $('#countdown');
-    for (let i = 0; i < n; i++) engine.click(t0 + i * step, i === 0);
-    for (let i = 0; i < n; i++) setTimeout(() => { cd.textContent = i + 1; cd.style.opacity = 1; }, (0.1 + i * step) * 1000);
-    await new Promise(r => setTimeout(r, (0.1 + n * step) * 1000 - 30));
-    cd.style.opacity = 0; counting = false;
+    const t0 = ctx.currentTime + 0.1, cd = $('#countdown');
+    for (let k = 0; k < n; k++){
+      engine.click(t0 + k * step, k === 0);
+      setTimeout(() => { cd.textContent = k + 1; cd.style.opacity = 1; }, (0.1 + k * step) * 1000);
+    }
+    when = t0 + n * step;
+    setTimeout(() => { cd.style.opacity = 0; counting = false; }, (when - ctx.currentTime) * 1000);
   }
-  await engine.play(); ui.updatePlay();
+  await engine.play(when); ui.updatePlay();
 }
 
 function frame(){
-  let now = engine.time();
-  if (engine.playing && app.loop.on && app.loop.b > app.loop.a && now >= app.loop.b){
-    engine.seek(app.loop.a); now = app.loop.a;
-  }
-  if (engine.playing && !engine.master && now >= engine.duration()){ engine.pause(); engine.seek(0); ui.updatePlay(); }
-  engine.scheduleClicks(now);
+  engine.tick();
+  const now = engine.time() + app.offset / 1000;
   if (app.song){
     if (app.mode === 'bass'){ drawBassLane(now); drawFretboard(now); }
     else { drawDrumLane(now); drawKit(now); }
@@ -972,6 +1067,7 @@ function frame(){
   }
   requestAnimationFrame(frame);
 }
+setInterval(() => engine.tick(), 50);
 
 /* Lauf-Band ziehen = spulen */
 (function(){
@@ -991,12 +1087,14 @@ $('#playBtn').onclick = togglePlay;
 $('#homeBtn').onclick = () => { engine.seek(app.loop.on ? app.loop.a : 0); };
 $('#seek').addEventListener('input', e => { ui.dragging = true; engine.seek(+e.target.value); });
 $('#seek').addEventListener('change', () => { ui.dragging = false; });
-$('#tempo').oninput = e => { const v = +e.target.value; $('#tempoVal').textContent = v + ' %'; engine.setRate(v / 100); };
+$('#tempo').oninput = e => { $('#tempoVal').textContent = e.target.value + ' %'; };
+$('#tempo').onchange = e => { engine.setRate(+e.target.value / 100); };
 $('#aBtn').onclick = () => { app.loop.a = snapToBeat(engine.time()); if (app.loop.b <= app.loop.a) app.loop.b = Math.min(engine.duration(), app.loop.a + 4); ui.loopBtns(); toast('Loop-Anfang gesetzt'); };
 $('#bBtn').onclick = () => { const t = snapToBeat(engine.time()); if (t <= app.loop.a){ toast('B muss nach A liegen'); return; } app.loop.b = t; app.loop.on = true; ui.loopBtns(); toast('Loop aktiv'); };
+$('#sync').oninput = e => { app.offset = +e.target.value; $('#syncVal').textContent = (app.offset > 0 ? '+' : '') + app.offset + ' ms'; if (app.song) saveOffset(); };
 $('#loopBtn').onclick = () => { app.loop.on = !app.loop.on; ui.loopBtns(); };
 $('#barLoopBtn').onclick = barLoop;
-$('#clickBtn').onclick = e => { app.click = !app.click; e.target.classList.toggle('on', app.click); if (app.click) engine.ensureCtx(); engine.nextClickIdx = lowerBoundNum(app.song ? app.song.beats : [], engine.time()); };
+$('#clickBtn').onclick = e => { app.click = !app.click; e.target.classList.toggle('on', app.click); if (app.click) engine.resume(); engine.nextClickIdx = lowerBoundNum(app.song ? app.song.beats : [], engine.audioTime()); };
 $('#countBtn').onclick = e => { app.countIn = !app.countIn; e.target.classList.toggle('on', app.countIn); };
 $('#zoomIn').onclick = () => app.pps = clamp(app.pps * 1.25, 50, 600);
 $('#zoomOut').onclick = () => app.pps = clamp(app.pps / 1.25, 50, 600);
