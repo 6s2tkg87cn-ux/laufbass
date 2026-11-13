@@ -1316,7 +1316,10 @@ function gridChanged(msg){
 function keepOrig(){ const s = app.song; if (!s.origGrid) s.origGrid = {beats: s.beats.slice(), firstDownbeat: s.firstDownbeat, tempo: s.tempo}; }
 function gridInfo(){
   const s = app.song; if (!s) return;
-  $('#gInfo').textContent = s.beats.length ? `Tempo ${Math.round(s.tempo || 0)} BPM · ${s.beats.length} Schläge` + (s.origGrid ? ' · korrigiert' : '') : 'Kein Raster vorhanden';
+  const A = s.analysis;
+  const how = A ? `Erkennung v${A.version}: Bass ${A.bass === 'v2' ? 'neu' : A.bass}, Schlagzeug ${A.drums === 'adtof' ? 'ADTOF' : A.drums}, Takt ${A.beats === 'beat_this' ? 'Beat This!' : A.beats}`
+                : 'Erkennung: alte Version (vor dem Update) – Song bitte neu vorbereiten';
+  $('#gInfo').innerHTML = (s.beats.length ? `Tempo ${Math.round(s.tempo || 0)} BPM · ${s.beats.length} Schläge` + (s.origGrid ? ' · korrigiert' : '') : 'Kein Raster vorhanden') + '<br>' + how;
 }
 $('#gridBtn').onclick = () => { const p = $('#gridPanel'); p.hidden = !p.hidden; gridInfo(); };
 $('#gridClose').onclick = () => { $('#gridPanel').hidden = true; };

@@ -43,6 +43,8 @@ import numpy as np
 
 FORMAT_NAME = "laufbass"
 FORMAT_VERSION = 1
+PREP_VERSION = "2"  # Stand der Erkennung; erscheint in der Übe-App unter "Raster"
+ANALYSIS: dict = {}  # welche Verfahren wirklich benutzt wurden (Fallbacks sichtbar machen)
 STEM_NAMES = ("bass", "drums", "vocals", "other")
 BASS_TUNING = [28, 33, 38, 43]  # E1 A1 D2 G2
 BASS_MIN_MIDI, BASS_MAX_MIDI = 28, 67
@@ -378,9 +380,11 @@ def transcribe_bass_v2(bass_wav: Path) -> list[Note]:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import bass_v2
         res = bass_v2.transcribe(bass_wav, log=lambda m: say("   " + m))
+        ANALYSIS["bass"] = "v2"
         return [Note(n.t, n.d, n.p, n.v) for n in res]
     except Exception as e:
         say(f"   WARNUNG: neue Bass-Erkennung fehlgeschlagen ({str(e)[:160]}), nehme basic-pitch direkt.")
+        ANALYSIS["bass"] = "basic-pitch"
         return transcribe_bass_basic_pitch(bass_wav)
 
 
@@ -1101,6 +1105,7 @@ def process_file(audio: Path, out_dir: Path, model: str = "htdemucs", keep_temp:
         t0 = step(3, TOTAL, "Schlagzeug erkennen ...")
         hits, drum_engine = transcribe_drums(stems["drums"])
         say(f"   Verfahren: {'ADTOF (KI-Modell)' if drum_engine == 'adtof' else 'Frequenzbaender'}")
+        ANALYSIS["drums"] = drum_engine
         counts = {k: sum(1 for h in hits if h.k == k) for k in GM_DRUMS}
         say("   " + ", ".join(f"{v} {k}" for k, v in counts.items() if v) if hits else "   keine Schlaege gefunden")
         done(t0)
@@ -1112,6 +1117,7 @@ def process_file(audio: Path, out_dir: Path, model: str = "htdemucs", keep_temp:
         # Beat-Modell laeuft auf dem kompletten Original-Mix (nicht auf einem Stem)
         say("   Suche Schlaege im Original-Mix ...")
         raw_beats, raw_downbeats, engine = detect_beats(mix, SEP_SR)
+        ANALYSIS["beats"] = engine
         say(f"   {len(raw_beats)} Roh-Schlaege ({'Beat This!' if engine == 'beat_this' else 'librosa'})")
         import librosa
         d_y, _ = librosa.load(str(stems["drums"]), sr=SEP_SR, mono=True)
@@ -1145,6 +1151,9 @@ def process_file(audio: Path, out_dir: Path, model: str = "htdemucs", keep_temp:
         files["bass.mid"], files["drums.mid"] = tmp / "bass.mid", tmp / "drums.mid"
         song = build_song_json(title, audio.name, duration, tempo, beats, first_db, list(stems), notes, hits,
                                beats_per_bar, beat_mode)
+        song["analysis"] = {"version": PREP_VERSION, "separation": model if not stems_dir else "stems-dir",
+                            "bass": ANALYSIS.get("bass", bass_engine), "drums": ANALYSIS.get("drums", "?"),
+                            "beats": ANALYSIS.get("beats", "?")}
         (tmp / "song.json").write_text(json.dumps(song, ensure_ascii=False, indent=1), encoding="utf-8")
         files["song.json"] = tmp / "song.json"
         write_package(zip_path, files)

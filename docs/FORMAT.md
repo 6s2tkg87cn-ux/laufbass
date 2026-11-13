@@ -58,6 +58,7 @@ drums.mid      Drums als MIDI (General-MIDI-Drum-Map, Kanal 10)
 | `bass.tuning` | MIDI-Tonhöhen der leeren Saiten, tiefste zuerst (Standard E1 A1 D2 G2) |
 | `bass.notes[]` | `t` Start (s), `d` Dauer (s), `p` MIDI-Tonhöhe, `v` Velocity 1–127 |
 | `drums.hits[]` | `t` Zeit (s), `k` Instrument, `v` Velocity 1–127 |
+| `analysis` | optional: womit erkannt wurde, z. B. `{"version": "2", "separation": "htdemucs", "bass": "v2", "drums": "adtof", "beats": "beat_this"}` |
 
 Erlaubte Werte für `k`: `kick`, `snare`, `hihat`, `hihat_open`, `tom_high`, `tom_mid`, `tom_low`, `crash`, `ride`.
 
