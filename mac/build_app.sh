@@ -15,7 +15,7 @@ echo "   Baue $NAME.app ..."
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/practice"
 
-cp "$HIER/app/gui.py" "$HIER/app/ui.html" "$HIER/app/icon.png" "$HIER/laufbass_prep.py" "$APP/Contents/Resources/"
+cp "$HIER/app/gui.py" "$HIER/app/ui.html" "$HIER/app/icon.png" "$HIER/laufbass_prep.py" "$HIER/bass_v2.py" "$APP/Contents/Resources/"
 cp "$ROOT/app/index.html" "$APP/Contents/Resources/practice/index.html"
 
 # --- Info.plist ---

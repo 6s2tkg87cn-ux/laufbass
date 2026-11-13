@@ -53,25 +53,29 @@ Die fertige `.laufbass.zip` öffnest du dann in der Laufbass-App.
 
 ## Wie lange dauert es?
 
-Auf einem MacBook Air M1 ungefähr **1–3 Minuten für einen Song von 4 Minuten**
+Auf einem MacBook Air M1 ungefähr **2–5 Minuten für einen Song von 4 Minuten**
 (der größte Teil ist die Instrumententrennung; das allererste Mal kommt der Modell-Download dazu).
 Das Fenster bitte währenddessen offen lassen; das MacBook zieht dabei Strom und wird warm.
 
+## So wird erkannt
+
+- **Bass:** Die Einsätze kommen direkt aus der Bass-Spur: Lautstärkesprung oder das „Klicken“ des Anschlags.
+  So werden auch gleiche Achtel hintereinander als einzelne Noten erkannt. Die Tonhöhe bestimmen zwei unabhängige
+  Verfahren (basic-pitch und pYIN). **Angezeigt wird eine Note nur, wenn beide übereinstimmen.** Dort, wo die
+  Bass-Spur fast stumm ist (z. B. Klavier-Intro), wird nichts angezeigt. Lieber eine Note zu wenig als eine falsche.
+- **Schlagzeug:** KI-Modell **ADTOF**, trainiert auf echten Aufnahmen. Es erkennt Bassdrum, Snare, Hi-Hat, Toms
+  und Becken. Durchlaufende Becken werden als Ride gezeigt, einzelne als Crash.
+- **Tempo/Takt:** **Beat This!** auf dem Original-Song. Jeder erkannte Schlag bekommt eine feste Zählzeit. Hört
+  das Modell kurz doppelt so schnell oder lässt Schläge aus, verrutscht die „1“ deshalb nicht mehr. Bei
+  gleichmäßigen Songs (Klick) gibt es ein festes Raster, sonst eines, das dem Schlagzeuger folgt.
+
 ## Grenzen der Erkennung
 
-- **Bass:** Funktioniert am besten bei klaren, einstimmigen Basslinien. Sehr schnelle Läufe,
-  Slap, Akkorde oder stark verzerrter Bass werden fehlerhafter erkannt. Einzelne Oktavfehler
-  und falsche Wiederholungen sind möglich.
-- **Schlagzeug:** Es wird mit einem einfachen Verfahren nach Frequenzbereichen erkannt.
-  Erkannt werden **Bassdrum, Snare, Hi-Hat** und (nur sehr vorsichtig) **Crash**.
-  **Toms, Ride, offene Hi-Hat** werden nicht erkannt. Bei dichten Fills, leisen Ghost-Notes
-  und Hi-Hat genau unter der Snare sind Fehler normal. Rechne mit einem Rohentwurf, nicht mit Perfektion.
-- **Tempo/Takt:** Das Tempo wird automatisch bestimmt und kann bei manchen Songs doppelt oder halb
-  so groß sein. Die „Eins" des Takts kommt aus dem Beat-Modell (Takte mit 3 oder 4 Schlägen). Bei
-  Songs mit Tempowechseln wird das Raster abschnittsweise geglättet (`beatMode: variable`).
-  Im Terminal steht, ob ein festes oder variables Raster gewählt wurde und wie stark die Roh-Schläge abwichen.
-  Falls das Beat-Modell nicht geladen werden kann, erscheint eine Warnung und es wird ein einfacheres Verfahren benutzt.
-- Erkannt werden 4/4 und 3/4; andere Taktarten werden als 4/4 behandelt.
+- **Bass:** Slap, Akkorde, stark verzerrter Bass und sehr schnelle Läufe werden schlechter erkannt.
+  Gleitende Töne (Slides) erscheinen als einzelne Noten.
+- **Schlagzeug:** Leise Ghost-Notes und offene Hi-Hat werden oft nicht erkannt.
+- **Takt:** Erkannt werden 4/4 und 3/4. Falls die „1“ oder das Tempo (doppelt/halb) doch einmal falsch ist:
+  in der Übe-App über **Raster** korrigieren.
 
 ## Noten in Logic korrigieren und neu laden
 

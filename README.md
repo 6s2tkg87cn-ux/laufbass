@@ -3,7 +3,7 @@
 Übe-App für **Bass und Schlagzeug**. Ein Song wird auf dem Mac einmal vorbereitet: Er wird in Spuren getrennt, und die Noten werden erkannt. Danach kann man auf Mac, iPad oder iPhone mitspielen. Das virtuelle Griffbrett bzw. Schlagzeug zeigt dabei, was zu spielen ist.
 
 ```
-MP3 ──► Mac-Skript (Demucs + Basic Pitch + Drum-Erkennung) ──► Song.laufbass.zip ──► Übe-App
+MP3 ──► Mac-App (Demucs + Bass-Erkennung + ADTOF + Beat This!) ──► Song.laufbass.zip ──► Übe-App
 ```
 
 ## Teile
@@ -17,13 +17,16 @@ MP3 ──► Mac-Skript (Demucs + Basic Pitch + Drum-Erkennung) ──► Song.
 
 ## Übe-App
 
-- **Bass:** Tab-Laufband, Griffbrett mit aktueller Note und Vorschau der nächsten, Bund- oder Notennamen, 4 oder 5 Saiten. Der Fingersatz wird automatisch berechnet: tiefe Lagen, wenige Lagenwechsel.
+- **Bass:** Tab-Laufband, Griffbrett mit aktueller Note und Vorschau der nächsten, Bund- oder Notennamen. Der Fingersatz wird automatisch berechnet: tiefe Lagen, wenige Lagenwechsel.
+- **Einfach-Modus (Taste E):** Bass zeigt pro Schlag nur den Grundton. Schlagzeug: Der Song wird in Teile mit gleichem Groove zerlegt, pro Teil gibt es ein festes Pattern aus Bassdrum, Snare und Hi-Hat (Achtel), ohne Fills.
+- **Transponieren:** ♭/♯ verschiebt Bassnoten und Wiedergabe um Halbtöne, das Tempo bleibt gleich.
+- **Raster korrigieren:** „Hier ist die 1“, Tempo ×2/÷2, Raster ±10 ms. Wird pro Song gespeichert.
 - **Schlagzeug:** Laufband pro Instrument und Drumset von oben. Die Pads leuchten beim Schlag auf und kündigen den nächsten an.
 - **Üben:** Tempo 40–120 % ohne Tonhöhenänderung, Takt-Loop (1/2/4 Takte), A-B-Loop, Einzähler, Metronom-Klick.
 - **Mixer:** Jede Spur hat Lautstärke und Stummschaltung. Es gibt die Voreinstellungen „Mitspielen (ohne Bass)“ und „Nur Bass“.
 - **Bibliothek:** Geöffnete Songs bleiben im Browser gespeichert.
 - **Korrekturen:** Eine in Logic korrigierte `.mid` einfach zusätzlich öffnen. Sie ersetzt dann die erkannten Noten.
-- **Bedienung:** Leertaste = Play/Pause, ← → = spulen, L = Loop, B/S = Bass/Schlagzeug. Durch Ziehen am Laufband wird gespult.
+- **Bedienung:** Leertaste = Play/Pause, ← → = spulen, L = Loop, B/S = Bass/Schlagzeug, E = Einfach. Durch Ziehen am Laufband wird gespult.
 
 **Starten:** `app/index.html` in Safari oder Chrome öffnen. Nach Aktivierung von GitHub Pages geht es auch online unter `https://<benutzer>.github.io/laufbass/`. Auf dem iPad die `.laufbass.zip` über „Öffnen“ aus der Dateien-App wählen.
 
@@ -31,8 +34,8 @@ MP3 ──► Mac-Skript (Demucs + Basic Pitch + Drum-Erkennung) ──► Song.
 
 Die Erkennung ist gut genug zum Üben, aber nicht perfekt:
 
-- **Bass:** Gelegentlich gibt es Oktavfehler, und schnelle Tonwiederholungen werden verschluckt.
-- **Schlagzeug:** Kick, Snare und Hi-Hat werden erkannt, Toms, Ride und offene Hi-Hat noch nicht.
-- **Tempo und Takt:** Das Tempo kann doppelt oder halb erkannt werden. Es wird ein 4/4-Takt angenommen.
+- **Bass:** Es werden nur Noten gezeigt, bei denen sich zwei Verfahren einig sind. An unklaren Stellen fehlt also eher eine Note. Slap, Akkorde und Slides bleiben schwierig.
+- **Schlagzeug:** Leise Ghost-Notes und offene Hi-Hat fehlen oft. Crash und Ride werden nur nach dem Spielmuster unterschieden.
+- **Tempo und Takt:** 4/4 und 3/4. Falls die „1“ oder das Tempo nicht stimmt: in der App unter „Raster“ korrigieren.
 
-Die Erkennung der Drums steckt in einer einzigen Funktion (`transcribe_drums_bands`) und lässt sich später durch ein besseres Modell ersetzen.
+Entwickler-Tests: `mac/dev/synth_test.py` (ganzer Ablauf) und `mac/dev/bass_bench.py` (harte Bass-Testlinie mit Achteln, Oktaven und Klavier-Resten).

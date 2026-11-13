@@ -371,6 +371,19 @@ def transcribe_bass_basic_pitch(bass_wav: Path) -> list[Note]:
     return notes
 
 
+def transcribe_bass_v2(bass_wav: Path) -> list[Note]:
+    """Default: onset segmentation + basic-pitch AND pYIN must agree (see bass_v2.py).
+    Falls back to the plain basic-pitch path if something goes wrong."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import bass_v2
+        res = bass_v2.transcribe(bass_wav, log=lambda m: say("   " + m))
+        return [Note(n.t, n.d, n.p, n.v) for n in res]
+    except Exception as e:
+        say(f"   WARNUNG: neue Bass-Erkennung fehlgeschlagen ({str(e)[:160]}), nehme basic-pitch direkt.")
+        return transcribe_bass_basic_pitch(bass_wav)
+
+
 def transcribe_bass_pyin(bass_wav: Path) -> list[Note]:
     """TEST ONLY: monophonic pYIN tracker (no basic-pitch needed)."""
     import librosa
@@ -539,6 +552,60 @@ def transcribe_drums_bands(drum_wav: Path, return_debug: bool = False):
     return hits
 
 
+ADTOF_CLASSES = ("kick", "snare", "tom_mid", "hihat", "crash")  # order of the model outputs (GM 35 38 47 42 49)
+ADTOF_THRESHOLDS = (0.22, 0.24, 0.32, 0.22, 0.30)               # per class, from the ADTOF paper
+ADTOF_FPS = 100
+ADTOF_LAG_S = 0.005  # ADTOF peaks sit ~5 ms before the attack (measured against the flux onsets)
+
+
+def transcribe_drums_adtof(drum_wav: Path, return_activations: bool = False):
+    """Neural drum transcription (ADTOF Frame-RNN, Zehren et al. 2021/2023, PyTorch port).
+    Trained on real recordings: tells kick from snare reliably, also finds toms and cymbals.
+    Returns a list of DrumHit (and the activation matrix [frames, 5] if requested)."""
+    try:
+        import torch
+        from adtof_pytorch import (create_frame_rnn_model, calculate_n_bins, load_audio_for_model,
+                                   load_pytorch_weights, get_default_weights_path, PeakPicker)
+    except Exception as e:
+        raise LaufbassError(f"Das Drum-Modell (ADTOF) ist nicht installiert ({e}).")
+    import contextlib, io
+    model = create_frame_rnn_model(calculate_n_bins())
+    model.eval()
+    w = get_default_weights_path()
+    if not w or not Path(w).exists():
+        raise LaufbassError("Die Gewichte des Drum-Modells (ADTOF) fehlen.")
+    with contextlib.redirect_stdout(io.StringIO()):
+        model = load_pytorch_weights(model, w, strict=False)
+    x = load_audio_for_model(str(drum_wav))
+    with torch.no_grad():
+        act = model(x).cpu().numpy()[0]  # [frames, 5]
+    picker = PeakPicker(thresholds=list(ADTOF_THRESHOLDS), fps=ADTOF_FPS)
+    peaks = picker.pick(act[None], labels=list(range(5)), label_offset=0)[0]
+    hits: list[DrumHit] = []
+    for c, name in enumerate(ADTOF_CLASSES):
+        for t in peaks.get(c, []):
+            f = int(round(t * ADTOF_FPS))
+            a = float(act[max(0, f - 1): f + 2, c].max())
+            hits.append(DrumHit(float(t) + ADTOF_LAG_S, name, int(round(35 + 92 * min(1.0, a)))))
+    # ADTOF has one class for all cymbals. A cymbal played as a steady stream (>= 3 more hits within
+    # +-1.2 s) keeps time -> ride; a single accent -> crash.
+    cym = np.array(sorted(h.t for h in hits if h.k == "crash"))
+    for h in hits:
+        if h.k == "crash" and int(np.sum(np.abs(cym - h.t) <= 1.2)) - 1 >= 3:
+            h.k = "ride"
+    hits.sort(key=lambda h: (h.t, h.k))
+    return (hits, act) if return_activations else hits
+
+
+def transcribe_drums(drum_wav: Path) -> tuple[list[DrumHit], str]:
+    """ADTOF if available, else the band-wise fallback. Returns (hits, engine name)."""
+    try:
+        return transcribe_drums_adtof(drum_wav), "adtof"
+    except LaufbassError as e:
+        say(f"   WARNUNG: {e} Es wird das einfachere Verfahren benutzt (Kick/Snare weniger zuverlaessig).")
+        return transcribe_drums_bands(drum_wav), "bands"
+
+
 def _infill_hats_under_snares(hits: list[DrumHit], snare_times: list[float]) -> list[DrumHit]:
     """Hats are hidden by snare noise. If the hat pattern is steady (hat before and after a snare at
     equal distance), assume the hat also plays on the snare."""
@@ -594,7 +661,8 @@ def _detect_crashes(y: np.ndarray, sr: int, cand: list[tuple[int, float]], fs: f
 #   c) Phasenkorrektur gegen die Schlagzeug-Onsets (Kick/Snare)
 #   d) Taktart und erste "Eins" aus den Modell-Downbeats
 # --------------------------------------------------------------------------
-BEAT_FIXED_RMS_MS = 25.0   # Rest-Abweichung, unter der ein festes Raster gewaehlt wird
+BEAT_FIXED_RMS_MS = 12.0   # Rest-Abweichung, unter der ein festes Raster gewaehlt wird ...
+BEAT_FIXED_P95_MS = 30.0   # ... und keine Stelle weiter als das danebenliegt
 PHASE_MAX_SHIFT_S = 0.040  # Suchbereich der Phasenkorrektur (+-40 ms)
 # Systematischer Versatz zwischen Flux-Peak und echtem Einsatz (s). Mit mac/dev/synth_test.py
 # (bekannte Kicks/Snares) gemessen: ca. -1 ms, also deutlich unter einem Frame (5,8 ms) -> 0.
@@ -669,6 +737,41 @@ def clean_beat_sequence(beats: np.ndarray) -> np.ndarray:
     return np.asarray(out, dtype=float)
 
 
+def assign_beat_indices(beats: np.ndarray, win: int = 24, tol: float = 0.3,
+                        max_skip: int = 6) -> tuple[np.ndarray, np.ndarray]:
+    """Give every detector beat an integer position on the beat grid.
+
+    The local beat period is the median interval over +-win beats, so a short stretch where the model
+    hears double time (or skips beats) cannot change it. Each beat advances the count by
+    round(gap / period). Beats that land between grid positions (|r - round(r)| > tol, e.g. half-beat
+    extras in a double-time stretch) are dropped instead of being counted - otherwise the bar count
+    shifts and the '1' ends up on the wrong beat for the rest of the song.
+
+    Returns (kept_times, integer_indices)."""
+    b = np.sort(np.asarray(beats, dtype=float))
+    n = len(b)
+    if n < 3:
+        return b, np.arange(n)
+    d = np.diff(b)
+    loc = np.empty(n - 1)
+    for i in range(n - 1):
+        lo, hi = max(0, i - win), min(n - 1, i + win + 1)
+        loc[i] = float(np.median(d[lo:hi]))
+    keep_t, keep_i = [b[0]], [0]
+    skipped = 0
+    for i in range(1, n):
+        L = loc[min(i - 1, n - 2)]
+        r = (b[i] - keep_t[-1]) / L if L > 0 else 1.0
+        k = int(round(r))
+        if k >= 1 and (abs(r - k) <= tol or skipped >= max_skip):
+            keep_t.append(b[i])
+            keep_i.append(keep_i[-1] + k)
+            skipped = 0
+        else:
+            skipped += 1  # off-grid extra beat
+    return np.asarray(keep_t), np.asarray(keep_i, dtype=int)
+
+
 def _robust_line(x: np.ndarray, y: np.ndarray, w0: np.ndarray | None = None,
                  floor_s: float = 0.004) -> tuple[float, float, np.ndarray]:
     """y ~ a + c*x by iteratively reweighted least squares (Huber, then Tukey). Returns (a, c, residuals)."""
@@ -727,28 +830,58 @@ def _robust_poly_at0(xs: np.ndarray, ys: np.ndarray, w0: np.ndarray, deg: int = 
     return float(coef[0])
 
 
-def smooth_variable_grid(b: np.ndarray, half_window: int = 16) -> np.ndarray:
+def smooth_variable_grid(b: np.ndarray, idx: np.ndarray | None = None, half_window: int = 16) -> np.ndarray:
     """Moving robust regression (local line + curvature) over +-half_window beats (~8 bars in 4/4):
     follows tempo changes but removes the frame-to-frame jitter of the detector. The curvature term
-    keeps the result unbiased during accelerando / ritardando."""
-    n = len(b)
-    x = np.arange(n, dtype=float)
-    out = np.empty(n)
+    keeps the result unbiased during accelerando / ritardando.
+
+    idx: integer grid position of each beat (gaps allowed, see assign_beat_indices). The result has one
+    beat for EVERY position from idx[0] to idx[-1], so missing beats are filled in from the local fit."""
+    b = np.asarray(b, dtype=float)
+    x = np.arange(len(b), dtype=float) if idx is None else np.asarray(idx, dtype=float)
+    pos = np.arange(int(x[0]), int(x[-1]) + 1, dtype=float)
+    out = np.empty(len(pos))
     full = 2 * half_window + 1
-    for i in range(n):
-        lo, hi = max(0, i - half_window), min(n, i + half_window + 1)
-        if hi - lo < full:  # edges: keep the window size by shifting it
-            if lo == 0:
-                hi = min(n, full)
-            else:
-                lo = max(0, n - full)
-        xs, ys = x[lo:hi] - i, b[lo:hi]
+    span = x[-1] - x[0]
+    for j, i in enumerate(pos):
+        lo, hi = i - half_window, i + half_window
+        if span >= full - 1:  # edges: keep the window size by shifting it
+            if lo < x[0]:
+                lo, hi = x[0], x[0] + full - 1
+            elif hi > x[-1]:
+                lo, hi = x[-1] - full + 1, x[-1]
+        m = (x >= lo) & (x <= hi)
+        xs, ys = x[m] - i, b[m]
         if len(xs) < 6:
-            out[i] = b[i]
+            k = int(np.argmin(np.abs(x - i)))
+            T = float(np.median(np.diff(b) / np.diff(x))) if len(b) > 1 else 0.5
+            out[j] = b[k] + (i - x[k]) * T
             continue
-        tri = np.clip((1 - (np.abs(xs) / (half_window + 1)) ** 3) ** 3, 1e-3, None)  # tricube weights
-        out[i] = _robust_poly_at0(xs, ys - b[i], tri) + b[i]
+        hw = max(half_window, float(np.max(np.abs(xs))))
+        tri = np.clip((1 - (np.abs(xs) / (hw + 1)) ** 3) ** 3, 1e-3, None)  # tricube weights
+        ref = float(np.interp(i, x, b))
+        out[j] = _robust_poly_at0(xs, ys - ref, tri) + ref
     return out
+
+
+def extend_grid(grid: np.ndarray, duration: float, n_ref: int = 8) -> tuple[np.ndarray, int]:
+    """Continue the grid with the local tempo of its first/last beats to cover 0..duration.
+    Returns (grid, number of beats added in front)."""
+    if len(grid) < 2:
+        return grid, 0
+    T0 = float(np.median(np.diff(grid[:n_ref + 1])))
+    T1 = float(np.median(np.diff(grid[-n_ref - 1:])))
+    front = []
+    t = grid[0] - T0
+    while t >= -1e-6 and T0 > 0.15:
+        front.append(t)
+        t -= T0
+    back = []
+    t = grid[-1] + T1
+    while t <= duration + 1e-6 and T1 > 0.15:
+        back.append(t)
+        t += T1
+    return np.concatenate([np.asarray(front[::-1]), grid, np.asarray(back)]), len(front)
 
 
 def combined_onset_env(drum_env: dict[str, np.ndarray]) -> np.ndarray:
@@ -796,14 +929,21 @@ def regularize_beats(raw: np.ndarray, duration: float, env: np.ndarray | None = 
                      fs: float = 0.0, log=None) -> dict:
     """Raw detector beats -> clean grid. Returns dict(beats, tempo, mode, rms_ms, offset_ms)."""
     log = log or (lambda m: None)
-    b = clean_beat_sequence(raw)
+    b, x = assign_beat_indices(np.asarray(raw, dtype=float))
     if len(b) < 4:
         raise LaufbassError("Es wurden zu wenige Schlaege gefunden, um ein Raster zu bestimmen.")
-    x = np.arange(len(b), dtype=float)
+    dropped = len(raw) - len(b)
+    filled = int(x[-1] - x[0] + 1) - len(b)
+    if dropped or filled:
+        log(f"Roh-Schlaege bereinigt: {dropped} Zwischen-Schlaege verworfen, {filled} fehlende ergaenzt.")
+    x = x.astype(float)
     a, T, res = _robust_line(x, b)
     rms = _trimmed_rms(res) * 1000.0
+    p95 = float(np.percentile(np.abs(res), 95)) * 1000.0
     first_t, last_t = float(b[0]), float(b[-1])
-    if rms < BEAT_FIXED_RMS_MS:
+    # Fixed grid only for really steady songs (click track): a drummer drifting by 40-70 ms would
+    # otherwise put the grid half a 16th off in places.
+    if rms < BEAT_FIXED_RMS_MS and p95 < BEAT_FIXED_P95_MS:
         mode = "fixed"
         k0 = int(np.ceil(-a / T - 1e-9))              # first grid point at t >= 0
         k1 = int(np.floor((duration - a) / T + 1e-9))  # last grid point inside the song
@@ -813,9 +953,10 @@ def regularize_beats(raw: np.ndarray, duration: float, env: np.ndarray | None = 
             f"{rms:.1f} ms (Grenze {BEAT_FIXED_RMS_MS:.0f} ms).")
     else:
         mode = "variable"
-        grid = smooth_variable_grid(b)
+        grid = smooth_variable_grid(b, x)
+        grid, _ = extend_grid(grid, duration)
         tempo = 60.0 / float(np.median(np.diff(grid)))
-        log(f"Tempo schwankt (Abweichung vom festen Raster {rms:.1f} ms > {BEAT_FIXED_RMS_MS:.0f} ms): "
+        log(f"Tempo schwankt (Abweichung vom festen Raster {rms:.1f} ms, 95 % < {p95:.0f} ms): "
             f"Raster wird abschnittsweise (ca. 8 Takte) geglaettet, mittleres Tempo {tempo:.2f} BPM.")
     offset = 0.0
     if env is not None and fs > 0:
@@ -928,7 +1069,7 @@ def write_package(zip_path: Path, files: dict[str, Path]) -> None:
 # Gesamtablauf
 # --------------------------------------------------------------------------
 def process_file(audio: Path, out_dir: Path, model: str = "htdemucs", keep_temp: bool = False,
-                 stems_dir: Path | None = None, bass_engine: str = "basic-pitch",
+                 stems_dir: Path | None = None, bass_engine: str = "v2",
                  bitrate: int = 256) -> Path:
     t_all = time.time()
     title = audio.stem
@@ -949,14 +1090,17 @@ def process_file(audio: Path, out_dir: Path, model: str = "htdemucs", keep_temp:
         t0 = step(2, TOTAL, "Basslinie erkennen ...")
         if bass_engine == "pyin":
             notes = transcribe_bass_pyin(stems["bass"])
-        else:
+        elif bass_engine == "basic-pitch":
             notes = transcribe_bass_basic_pitch(stems["bass"])
+        else:
+            notes = transcribe_bass_v2(stems["bass"])
         say(f"   {len(notes)} Bassnoten gefunden")
         done(t0)
 
         # 3) drums
         t0 = step(3, TOTAL, "Schlagzeug erkennen ...")
-        hits = transcribe_drums_bands(stems["drums"])
+        hits, drum_engine = transcribe_drums(stems["drums"])
+        say(f"   Verfahren: {'ADTOF (KI-Modell)' if drum_engine == 'adtof' else 'Frequenzbaender'}")
         counts = {k: sum(1 for h in hits if h.k == k) for k in GM_DRUMS}
         say("   " + ", ".join(f"{v} {k}" for k, v in counts.items() if v) if hits else "   keine Schlaege gefunden")
         done(t0)
@@ -1024,7 +1168,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", default="htdemucs", help="Demucs-Modell (Standard: htdemucs)")
     # developer options (hidden)
     ap.add_argument("--stems-dir", help=argparse.SUPPRESS)
-    ap.add_argument("--bass-engine", choices=["basic-pitch", "pyin"], default="basic-pitch", help=argparse.SUPPRESS)
+    ap.add_argument("--bass-engine", choices=["v2", "basic-pitch", "pyin"], default="v2", help=argparse.SUPPRESS)
     ap.add_argument("--bitrate", type=int, default=256, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 

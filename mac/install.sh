@@ -103,6 +103,13 @@ try:
     print("   Demucs-Modell OK (Rechenwerk:", dev + ")")
     import librosa, pretty_midi, soundfile
     from basic_pitch.inference import predict  # noqa
+    try:
+        from adtof_pytorch import get_default_weights_path
+        import os
+        assert os.path.exists(get_default_weights_path())
+        print("   Drum-Modell (ADTOF) OK")
+    except Exception as e:
+        print("   WARNUNG: Drum-Modell (ADTOF) fehlt (", e, ") - es wird das einfachere Verfahren benutzt.")
     print("   Alle Pakete lassen sich laden.")
 except Exception as e:
     print("   WARNUNG: Der Test ist fehlgeschlagen:", e)

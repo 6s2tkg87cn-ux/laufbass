@@ -76,6 +76,11 @@ input[type=range]{accent-color:var(--accent);height:28px}
 #countdown{position:absolute;left:50%;top:38%;transform:translate(-50%,-50%);font-size:96px;font-weight:800;color:var(--accent);text-shadow:0 4px 30px #0008;pointer-events:none;opacity:0;transition:opacity .1s}
 .drums-mode #countdown{color:var(--drums)}
 .loopset button{padding:8px 10px}
+#simpleBtn.on{background:var(--ok);border-color:var(--ok);color:#06210d}
+.panel{position:absolute;right:14px;top:10px;z-index:20;background:var(--panel);border:1px solid #3a4050;border-radius:14px;padding:12px 14px;box-shadow:0 10px 40px #000a;max-width:min(420px,calc(100vw - 28px))}
+.panel .ptitle{display:flex;align-items:center;justify-content:space-between;font-weight:700;margin-bottom:4px}
+.panel .pbtns{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.panel p{margin:4px 0}
 @media (max-width:700px){
   .hide-s{display:none}
   .transport{gap:6px 8px}
@@ -108,11 +113,14 @@ input[type=range]{accent-color:var(--accent);height:28px}
       <button data-l="fret" class="on">Bund</button>
       <button data-l="name">Ton</button>
     </div>
-    <div class="seg" id="strSeg" title="Saiten">
-      <button data-s="4" class="on">4</button>
-      <button data-s="5">5</button>
+    <div class="seg" title="Transponieren (Halbtöne) – Anzeige und Wiedergabe">
+      <button id="trDown">♭</button>
+      <button id="trVal" title="Zurück auf Originaltonart" style="min-width:44px">±0</button>
+      <button id="trUp">♯</button>
     </div>
   </div>
+  <button id="simpleBtn" title="Vereinfacht: Grundtöne pro Schlag bzw. ein Groove pro Songteil">Einfach</button>
+  <button id="gridBtn" class="ghost" title="Taktraster korrigieren">Raster</button>
   <div class="grp" title="Verschiebt die Anzeige gegenüber dem Ton (Plus = Noten kommen früher)" style="display:flex;align-items:center;gap:6px">
     <span class="lbl">Sync</span>
     <input type="range" id="sync" min="-200" max="200" step="10" value="0" style="width:90px">
@@ -130,6 +138,21 @@ input[type=range]{accent-color:var(--accent);height:28px}
     <canvas id="instr"></canvas>
   </div>
   <div id="countdown"></div>
+  <div id="gridPanel" class="panel" hidden>
+    <div class="ptitle">Taktraster korrigieren <button class="ghost" id="gridClose" title="Schließen">✕</button></div>
+    <p class="lbl">Song an die Stelle spulen, an der eine „1“ ist (oder hören, wo sie sein müsste), dann:</p>
+    <div class="pbtns">
+      <button id="gHere">Hier ist die 1</button>
+      <button id="gHalf">Tempo ÷ 2</button>
+      <button id="gDouble">Tempo × 2</button>
+    </div>
+    <div class="pbtns">
+      <button id="gEarly">Raster − 10 ms</button>
+      <button id="gLate">Raster + 10 ms</button>
+      <button id="gReset" class="ghost">Original</button>
+    </div>
+    <p class="lbl" id="gInfo"></p>
+  </div>
   <div id="empty">
     <div class="card">
       <div class="drop" id="drop">
@@ -187,7 +210,7 @@ const noteNameOct = p => noteName(p) + (Math.floor(p / 12) - 1);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const STEM_LABEL = {bass:'Bass', drums:'Schlagzeug', vocals:'Gesang', other:'Rest', mix:'Mix'};
 const STEM_ORDER = ['bass','drums','vocals','other','mix'];
-const TUNINGS = {4:[28,33,38,43], 5:[23,28,33,38,43]};
+const TUNINGS = {4:[28,33,38,43]};
 const STRING_COLORS = ['--s0','--s1','--s2','--s3','--s4'].map(v => getComputedStyle(document.documentElement).getPropertyValue(v).trim());
 
 function toast(msg, ms = 2600){
@@ -335,11 +358,155 @@ function computeFingering(notes, tuning, maxFret = 20){
   }
 }
 
+/* ---------------- Raster-Hilfen ---------------- */
+// Zeit eines (auch gedachten) Schlags i: außerhalb des Rasters mit dem Randtempo fortgesetzt
+function beatTime(s, i){
+  const b = s.beats, n = b.length;
+  if (n < 2) return (i) * 60 / (s.tempo || 120);
+  if (i < 0) return b[0] + i * (b[1] - b[0]);
+  if (i >= n) return b[n - 1] + (i - n + 1) * (b[n - 1] - b[n - 2]);
+  return b[i];
+}
+// Position einer Zeit im 16tel-Raster: {bar, step} relativ zur ersten „1“
+function gridPos(s, t, perBeat = 4){
+  const bpb = s.timeSignature[0], fd = s.firstDownbeat;
+  let i = lowerBoundNum(s.beats, t) - 1;
+  if (i < 0) i = Math.floor((t - s.beats[0]) / (beatTime(s, 1) - beatTime(s, 0)));
+  const t0 = beatTime(s, i), t1 = beatTime(s, i + 1);
+  let k = Math.round((t - t0) / (t1 - t0) * perBeat);
+  const g = (i - fd) * perBeat + k, L = bpb * perBeat;
+  return {bar: Math.floor(g / L), step: ((g % L) + L) % L, err: Math.abs((t - t0) / (t1 - t0) * perBeat - k)};
+}
+function stepTime(s, bar, step, perBeat = 4){
+  const bpb = s.timeSignature[0], i = s.firstDownbeat + bar * bpb + Math.floor(step / perBeat);
+  const t0 = beatTime(s, i), t1 = beatTime(s, i + 1);
+  return t0 + (step % perBeat) / perBeat * (t1 - t0);
+}
+
+/* ---------------- Vereinfachter Modus ----------------
+   Schlagzeug: Song in Teile mit gleichem Groove zerlegen, pro Teil EIN Pattern (Mehrheit der Takte)
+   aus Bassdrum, Snare und Hi-Hat (Achtel). Fills und Geisternoten fallen weg, Crash zu Beginn eines Teils.
+   Bass: pro Schlag der Ton, der dort am längsten klingt, in tiefer Lage; einzelne Durchgangstöne weg. */
+function simplifyDrums(s){
+  const hits = s.drums.hits; if (!hits.length || s.beats.length < 8) return {hits: hits.slice(), sections: []};
+  const bpb = s.timeSignature[0], L = bpb * 4;
+  const cls = k => k === 'kick' ? 0 : k === 'snare' ? 1 : (k === 'hihat' || k === 'hihat_open' || k === 'ride') ? 2 : -1;
+  const lastBar = gridPos(s, s.duration || hits[hits.length - 1].t).bar;
+  const firstBar = Math.min(0, gridPos(s, hits[0].t).bar);
+  const nb = lastBar - firstBar + 1;
+  const pat = Array.from({length: nb}, () => [new Uint8Array(L), new Uint8Array(L), new Uint8Array(L)]);
+  const rideCount = new Int32Array(nb), crashAt = [];
+  for (const h of hits){
+    const g = gridPos(s, h.t); const b = g.bar - firstBar; if (b < 0 || b >= nb) continue;
+    if (h.k === 'crash'){ crashAt.push(h.t); continue; }
+    const c = cls(h.k); if (c < 0 || g.err > 0.4) continue;
+    pat[b][c][g.step] = 1; if (h.k === 'ride') rideCount[b]++;
+  }
+  const dist = (p, q) => { let d = 0; for (let j = 0; j < L; j++){ d += (p[0][j] ^ q[0][j]) + (p[1][j] ^ q[1][j]) + 0.25 * (p[2][j] ^ q[2][j]); } return d; };
+  const proto = cnt => { const n = cnt.n; return cnt.c.map(a => Uint8Array.from(a, v => v * 2 >= n ? 1 : 0)); };
+  const newCnt = () => ({n: 0, c: [new Float32Array(L), new Float32Array(L), new Float32Array(L)]});
+  const addTo = (cnt, p) => { cnt.n++; for (let c = 0; c < 3; c++) for (let j = 0; j < L; j++) cnt.c[c][j] += p[c][j]; };
+  const THR = 2.5;
+  // 1) gierig in Teile zerlegen; ein einzelner abweichender Takt (Fill) gehört zum laufenden Teil
+  let secs = [], cur = {start: 0, cnt: newCnt()}; addTo(cur.cnt, pat[0]);
+  for (let b = 1; b < nb; b++){
+    const P = proto(cur.cnt);
+    if (dist(pat[b], P) <= THR || (b + 1 < nb && dist(pat[b + 1], P) <= THR)){ addTo(cur.cnt, pat[b]); continue; }
+    secs.push(cur); cur = {start: b, cnt: newCnt()}; addTo(cur.cnt, pat[b]);
+  }
+  secs.push(cur);
+  // 2) Teile aus nur einem Takt an den vorigen hängen
+  const merged = [];
+  for (const sc of secs){
+    if (merged.length && sc.cnt.n === 1){ addTo(merged[merged.length - 1].cnt, pat[sc.start]); continue; }
+    merged.push(sc);
+  }
+  for (let i = 0; i < merged.length; i++) merged[i].end = i + 1 < merged.length ? merged[i + 1].start : nb;
+  // 3) Pattern pro Teil neu aus allen seinen Takten, dann ausgeben
+  const out = [], sections = [];
+  for (const sc of merged){
+    const cnt = newCnt(); let ride = 0;
+    for (let b = sc.start; b < sc.end; b++){ addTo(cnt, pat[b]); ride += rideCount[b]; }
+    const P = proto(cnt);
+    for (let j = 1; j < L; j += 2) P[2][j] = 0;             // Hi-Hat auf Achtel reduzieren
+    const hatK = ride * 2 > P[2].reduce((a, v) => a + v, 0) * (sc.end - sc.start) ? 'ride' : 'hihat';
+    const empty = !P.some(a => a.some(v => v));
+    sections.push({bar: sc.start + firstBar, bars: sc.end - sc.start, empty});
+    if (empty) continue;
+    const t0 = stepTime(s, sc.start + firstBar, 0);
+    if (crashAt.some(t => Math.abs(t - t0) < 0.6 * (beatTime(s, 1) - beatTime(s, 0)))) out.push({t: t0, k: 'crash', v: 110});
+    for (let b = sc.start; b < sc.end; b++){
+      for (let j = 0; j < L; j++){
+        const t = stepTime(s, b + firstBar, j);
+        if (t < 0 || (s.duration && t > s.duration)) continue;
+        if (P[0][j]) out.push({t, k: 'kick', v: 112});
+        if (P[1][j]) out.push({t, k: 'snare', v: 112});
+        if (P[2][j]) out.push({t, k: hatK, v: j % 4 === 0 ? 96 : 72});
+      }
+    }
+  }
+  out.sort((a, b) => a.t - b.t);
+  return {hits: out, sections};
+}
+
+function simplifyBass(s){
+  const notes = s.bass.notes; if (!notes.length || s.beats.length < 4) return notes.slice();
+  const n = s.beats.length, out = [];
+  let j = 0;
+  const per = [];
+  for (let i = 0; i < n - 1; i++){
+    const a = s.beats[i], b = s.beats[i + 1], len = b - a;
+    while (j < notes.length && notes[j].t + notes[j].d <= a) j++;
+    const w = {};
+    for (let k = j; k < notes.length && notes[k].t < b; k++){
+      const ov = Math.min(b, notes[k].t + notes[k].d) - Math.max(a, notes[k].t);
+      if (ov > 0) w[notes[k].p] = (w[notes[k].p] || 0) + ov;
+    }
+    let best = null, bw = 0, tot = 0;
+    for (const p in w){ tot += w[p]; if (w[p] > bw || (w[p] === bw && +p < best)){ best = +p; bw = w[p]; } }
+    per.push(tot >= 0.25 * len ? {p: best, w: bw / len, a, len} : null);
+  }
+  // einzelne Durchgangstöne zwischen zwei gleichen Nachbarn glätten
+  for (let i = 1; i < per.length - 1; i++){
+    const x = per[i], l = per[i - 1], r = per[i + 1];
+    if (x && l && r && l.p === r.p && x.p !== l.p && x.w < 0.6) x.p = l.p;
+  }
+  for (const x of per){
+    if (!x) continue;
+    let p = x.p; while (p > 45) p -= 12; while (p < 28) p += 12;   // tiefe Lage, wenig Lagenwechsel
+    out.push({t: x.a, d: x.len * 0.85, p, v: 100});
+  }
+  return out;
+}
+
 /* ---------------- Song-Modell ---------------- */
 const app = {
   song: null, mode: 'bass', label: 'fret', strings: 4, pps: 160,
   loop: {on: false, a: 0, b: 0}, click: false, countIn: true, libId: null, offset: 0,
+  simple: false, transpose: 0, view: {bass: [], drums: [], sections: []},
 };
+// Angezeigte Noten/Schläge: original oder vereinfacht, Bass transponiert, mit Fingersatz
+function rebuildView(){
+  const s = app.song; if (!s) return;
+  let bass = app.simple ? simplifyBass(s) : s.bass.notes;
+  bass = bass.map(n => ({t: n.t, d: n.d, p: n.p + app.transpose, v: n.v}));
+  computeFingering(bass, TUNINGS[4]);
+  const dr = app.simple ? simplifyDrums(s) : {hits: s.drums.hits, sections: []};
+  app.view = {bass, drums: dr.hits, sections: dr.sections};
+}
+function songKey(k){ return 'laufbass.' + k + '.' + (app.song ? app.song.title : ''); }
+function loadPrefs(){
+  try {
+    app.simple = localStorage.getItem(songKey('simple')) === '1';
+    app.transpose = +(localStorage.getItem(songKey('transpose')) || 0);
+    const g = JSON.parse(localStorage.getItem(songKey('grid')) || 'null');
+    if (g && Array.isArray(g.beats) && g.beats.length > 3){
+      app.song.origGrid = app.song.origGrid || {beats: app.song.beats.slice(), firstDownbeat: app.song.firstDownbeat, tempo: app.song.tempo};
+      app.song.beats = g.beats; app.song.firstDownbeat = g.firstDownbeat; if (g.tempo) app.song.tempo = g.tempo;
+    }
+  } catch (e){}
+}
+function savePref(k, v){ try { if (v === null) localStorage.removeItem(songKey(k)); else localStorage.setItem(songKey(k), v); } catch (e){} }
 function loadOffset(){ try { app.offset = +(localStorage.getItem('laufbass.offset.' + app.song.title) || 0); } catch (e){ app.offset = 0; } $('#sync').value = app.offset; $('#syncVal').textContent = (app.offset > 0 ? '+' : '') + app.offset + ' ms'; }
 function saveOffset(){ try { localStorage.setItem('laufbass.offset.' + app.song.title, app.offset); } catch (e){} }
 
@@ -440,7 +607,7 @@ function stretchBuffer(ctx, buf, rate){
 
 const engine = {
   ctx: null, out: null, stems: {}, sources: [], cache: new Map(),
-  playing: false, rate: 1, activeRate: 1, vpos: 0,
+  playing: false, rate: 1, shift: 0, activeRate: 1, bufRate: 1, pbRate: 1, vpos: 0,
   anchorCtx: 0, anchorSong: 0, prev: null, pending: null, loopScheduled: false, nextClickIdx: 0, stretchJob: 0,
   getCtx(){
     if (!this.ctx){
@@ -455,7 +622,7 @@ const engine = {
   clear(){
     this.stopSources(); this.playing = false;
     for (const k in this.stems) try { this.stems[k].gain.disconnect(); } catch (e){}
-    this.stems = {}; this.cache = new Map(); this.vpos = 0; this.rate = 1; this.activeRate = 1;
+    this.stems = {}; this.cache = new Map(); this.vpos = 0; this.rate = 1; this.shift = 0; this.activeRate = 1; this.bufRate = 1; this.pbRate = 1;
     $('#tempo').value = 100; $('#tempoVal').textContent = '100 %';
   },
   async addStem(name, blob){
@@ -486,13 +653,15 @@ const engine = {
     if (heard < this.anchorCtx && this.prev) return this.prev.song + (heard - this.prev.ctx) * this.activeRate;
     return Math.max(0, this.anchorSong + (heard - this.anchorCtx) * this.activeRate);
   },
-  buffers(){ return this.activeRate === 1 ? Object.fromEntries(Object.entries(this.stems).map(([k, s]) => [k, s.buf])) : this.cache.get(this.activeRate); },
+  // Puffer sind um bufRate gedehnt und laufen mit pbRate: Song-Tempo = bufRate * pbRate (= activeRate),
+  // Tonhöhe = pbRate (Transponieren). Ohne Transponieren ist pbRate 1.
+  buffers(){ return this.bufRate === 1 ? Object.fromEntries(Object.entries(this.stems).map(([k, s]) => [k, s.buf])) : this.cache.get(this.bufRate); },
   startSources(songPos, when){
     const bufs = this.buffers(); const list = [];
     for (const k in this.stems){
       const b = bufs && bufs[k]; if (!b) continue;
-      const off = songPos / this.activeRate; if (off >= b.duration) continue;
-      const s = this.ctx.createBufferSource(); s.buffer = b; s.connect(this.stems[k].gain);
+      const off = songPos / this.bufRate; if (off >= b.duration) continue;
+      const s = this.ctx.createBufferSource(); s.buffer = b; s.playbackRate.value = this.pbRate; s.connect(this.stems[k].gain);
       s.start(when, Math.max(0, off)); list.push(s);
     }
     return list;
@@ -519,20 +688,24 @@ const engine = {
     this.nextClickIdx = lowerBoundNum(app.song ? app.song.beats : [], t - 0.001);
     if (was) this.play();
   },
-  async setRate(r){
-    this.rate = r; const job = ++this.stretchJob;
-    if (r !== 1 && !this.cache.has(r) && this.hasAudio()){
-      ui.busy('Tempo ' + Math.round(r * 100) + ' % wird berechnet …');
+  setRate(r){ this.rate = r; return this.retune(); },
+  setShift(semi){ this.shift = semi; return this.retune(); },
+  async retune(){
+    const r = this.rate, f = Math.pow(2, this.shift / 12);
+    const q = Math.round(r / f * 10000) / 10000;   // Dehnung so, dass nach dem Umstimmen das Tempo r bleibt
+    const job = ++this.stretchJob;
+    if (q !== 1 && !this.cache.has(q) && this.hasAudio()){
+      ui.busy(this.shift ? 'Tonart wird umgerechnet …' : 'Tempo ' + Math.round(r * 100) + ' % wird berechnet …');
       const out = {}; const c = this.getCtx();
-      await Promise.all(Object.entries(this.stems).map(async ([k, s]) => { out[k] = await stretchBuffer(c, s.buf, r); }));
+      await Promise.all(Object.entries(this.stems).map(async ([k, s]) => { out[k] = await stretchBuffer(c, s.buf, q); }));
       ui.busy(null);
       if (this.cache.size >= 2) this.cache.delete(this.cache.keys().next().value);
-      this.cache.set(r, out);
+      this.cache.set(q, out);
       if (job !== this.stretchJob) return;
     }
     const was = this.playing, t = was ? this.audioTime() : this.vpos;
     if (was){ this.playing = false; this.stopSources(); }
-    this.activeRate = r; this.vpos = t;
+    this.activeRate = r; this.bufRate = q; this.pbRate = q === 1 && this.shift === 0 ? 1 : r / q; this.vpos = t;
     if (was) this.play();
   },
   tick(){
@@ -590,7 +763,7 @@ async function openFiles(fileList, {save = true, libId = null} = {}){
   // Nur MIDI ausgewählt und Song offen → Noten ersetzen
   if (!nonMidi.length && midis.length && app.song){
     for (const m of midis) applyMidi(app.song, parseMidi(await m.arrayBuffer()), m.name);
-    computeFingering(app.song.bass.notes, TUNINGS[app.strings]);
+    rebuildView();
     if (app.libId) lib.addFiles(app.libId, midis);
     ui.refreshAll(); return;
   }
@@ -637,8 +810,9 @@ async function openFiles(fileList, {save = true, libId = null} = {}){
     song.duration = last + 2;
     if (engine.hasAudio()) song.duration = Math.max(...Object.values(engine.stems).map(x => x.buf.duration));
   }
-  if (song.bass.tuning && song.bass.tuning.length === 5) app.strings = 5;
-  computeFingering(song.bass.notes, TUNINGS[app.strings]);
+  loadPrefs();
+  rebuildView(); ui.prefs();
+  if (app.transpose) engine.setShift(app.transpose);
   app.loop = {on: false, a: 0, b: 0};
   if (!song.bass.notes.length && song.drums.hits.length) setMode('drums');
   engine.seek(0);
@@ -765,7 +939,7 @@ function drawBassLane(now){
     ctx.fillStyle = '#6c7487'; ctx.font = '700 12px -apple-system,system-ui,sans-serif'; ctx.textBaseline = 'middle';
     ctx.fillText(noteName(TUNINGS[n][i]), 6, y);
   }
-  const notes = s.bass.notes; const t0 = now - px / app.pps - 4, t1 = now + (w - px) / app.pps;
+  const notes = app.view.bass; const t0 = now - px / app.pps - 4, t1 = now + (w - px) / app.pps;
   const bh = Math.min(30, rowH * 0.7);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   for (let i = lowerBound(notes, t0); i < notes.length && notes[i].t <= t1; i++){
@@ -788,6 +962,7 @@ function drawBassLane(now){
   ctx.globalAlpha = 1; ctx.textAlign = 'left';
   drawPlayhead(ctx, px, h);
   if (!notes.length) emptyMsg(ctx, w, h, 'Keine Bassnoten im Paket');
+  drawSections(ctx, now, px, w);
 }
 
 /* Bass: Griffbrett */
@@ -795,7 +970,7 @@ function drawFretboard(now){
   const [w, h] = fitCanvas(instr); const ctx = ictx;
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.clearRect(0, 0, w, h);
   const s = app.song; if (!s) return;
-  const n = app.strings, notes = s.bass.notes;
+  const n = app.strings, notes = app.view.bass;
   const maxNeeded = notes.reduce((m, x) => Math.max(m, x.f || 0), 0);
   const frets = clamp(Math.max(w < 620 ? 9 : w < 900 ? 12 : 15, maxNeeded + 1), 5, 21);
   const left = 64, right = w - 14, top = 18, bottom = h - 24;
@@ -869,7 +1044,7 @@ const KIT_BY = Object.fromEntries(KIT.map(p => [p.k, p]));
 const padOf = k => k === 'hihat_open' ? 'hihat' : k;
 
 function drumRows(){
-  const used = new Set((app.song ? app.song.drums.hits : []).map(h => padOf(h.k)));
+  const used = new Set((app.song ? app.view.drums : []).map(h => padOf(h.k)));
   ['kick','snare','hihat'].forEach(k => used.add(k));
   return LANE_ORDER.filter(k => used.has(k));
 }
@@ -888,7 +1063,7 @@ function drawDrumLane(now){
     ctx.globalAlpha = .9; ctx.fillText(KIT_BY[k].name, 6, y); ctx.globalAlpha = 1;
   });
   const idx = Object.fromEntries(rows.map((k, i) => [k, i]));
-  const hits = s.drums.hits, t0 = now - px / app.pps, t1 = now + (w - px) / app.pps;
+  const hits = app.view.drums, t0 = now - px / app.pps, t1 = now + (w - px) / app.pps;
   const r = Math.min(13, rowH * 0.36);
   for (let i = lowerBound(hits, t0 - 0.1); i < hits.length && hits[i].t <= t1; i++){
     const hh = hits[i], pk = padOf(hh.k); if (idx[pk] === undefined) continue;
@@ -907,6 +1082,7 @@ function drawDrumLane(now){
   ctx.globalAlpha = 1;
   drawPlayhead(ctx, px, h);
   if (!hits.length) emptyMsg(ctx, w, h, 'Keine Schlagzeug-Schläge im Paket');
+  drawSections(ctx, now, px, w);
 }
 
 function drawKit(now){
@@ -914,7 +1090,7 @@ function drawKit(now){
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.clearRect(0, 0, w, h);
   const s = app.song; if (!s) return;
   const S = Math.min(w, h * 1.75), ox = (w - S) / 2, oy = (h - S / 1.75) / 2 + 4, H = S / 1.75;
-  const hits = s.drums.hits;
+  const hits = app.view.drums;
   const level = {}, soon = {}, open = {};
   for (let i = lowerBound(hits, now - 0.25); i < hits.length && hits[i].t <= now + 0.6; i++){
     const hh = hits[i], k = padOf(hh.k);
@@ -956,6 +1132,18 @@ function drawKit(now){
   }
   ctx.textAlign = 'left';
 }
+// Im vereinfachten Modus: Beginn jedes Songteils markieren (A, B, C … = gleicher Groove)
+function drawSections(ctx, now, px, w){
+  const s = app.song, secs = app.view.sections; if (!app.simple || !secs || !secs.length) return;
+  const sigs = [];
+  ctx.font = '700 11px -apple-system,system-ui,sans-serif'; ctx.textBaseline = 'top';
+  secs.forEach((sc, i) => {
+    const t = stepTime(s, sc.bar, 0), x = px + (t - now) * app.pps;
+    if (x < -40 || x > w) return;
+    ctx.fillStyle = '#6ccf7f'; ctx.fillRect(Math.round(x), 0, 2, 18);
+    ctx.fillText(sc.empty ? 'Pause' : 'Teil ' + (i + 1) + ' · ' + sc.bars + ' T.', x + 5, 4 + 12);
+  });
+}
 function emptyMsg(ctx, w, h, msg){ ctx.fillStyle = '#6c7487'; ctx.font = '15px -apple-system,system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.fillText(msg, w / 2, h / 2); ctx.textAlign = 'left'; }
 
 /* ---------------- UI ---------------- */
@@ -963,6 +1151,11 @@ const ui = {
   dragging: false,
   busy(msg){ const t = $('#toast'); clearTimeout(toast._t); if (msg){ t.textContent = msg; t.classList.add('show'); } else t.classList.remove('show'); },
   updatePlay(){ $('#playBtn').textContent = engine.playing ? '❚❚' : '▶'; },
+  prefs(){
+    $('#simpleBtn').classList.toggle('on', app.simple);
+    const t = app.transpose; $('#trVal').textContent = t ? (t > 0 ? '+' : '−') + Math.abs(t) : '±0';
+    $('#trVal').classList.toggle('on', t !== 0);
+  },
   refreshAll(){
     const s = app.song;
     $('#songTitle').textContent = s ? s.title + (s.tempo ? ' · ' + Math.round(s.tempo) + ' BPM' : '') : '';
@@ -1100,7 +1293,60 @@ $('#zoomIn').onclick = () => app.pps = clamp(app.pps * 1.25, 50, 600);
 $('#zoomOut').onclick = () => app.pps = clamp(app.pps / 1.25, 50, 600);
 $('#modeSeg').onclick = e => { const b = e.target.closest('button'); if (b) setMode(b.dataset.mode); };
 $('#labelSeg').onclick = e => { const b = e.target.closest('button'); if (!b) return; app.label = b.dataset.l; $('#labelSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
-$('#strSeg').onclick = e => { const b = e.target.closest('button'); if (!b) return; app.strings = +b.dataset.s; $('#strSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); if (app.song) computeFingering(app.song.bass.notes, TUNINGS[app.strings]); };
+$('#simpleBtn').onclick = () => {
+  if (!app.song) return;
+  app.simple = !app.simple; savePref('simple', app.simple ? '1' : null); rebuildView(); ui.prefs();
+  toast(app.simple ? 'Vereinfacht: Grundtöne pro Schlag, ein Groove pro Songteil' : 'Alle erkannten Noten');
+};
+function setTranspose(t){
+  if (!app.song) return;
+  app.transpose = clamp(t, -7, 7); savePref('transpose', app.transpose || null);
+  rebuildView(); ui.prefs(); engine.setShift(app.transpose);
+}
+$('#trDown').onclick = () => setTranspose(app.transpose - 1);
+$('#trUp').onclick = () => setTranspose(app.transpose + 1);
+$('#trVal').onclick = () => setTranspose(0);
+
+/* Raster-Korrektur */
+function gridChanged(msg){
+  const s = app.song;
+  savePref('grid', JSON.stringify({beats: s.beats, firstDownbeat: s.firstDownbeat, tempo: s.tempo}));
+  rebuildView(); ui.refreshAll(); gridInfo(); if (msg) toast(msg);
+}
+function keepOrig(){ const s = app.song; if (!s.origGrid) s.origGrid = {beats: s.beats.slice(), firstDownbeat: s.firstDownbeat, tempo: s.tempo}; }
+function gridInfo(){
+  const s = app.song; if (!s) return;
+  $('#gInfo').textContent = s.beats.length ? `Tempo ${Math.round(s.tempo || 0)} BPM · ${s.beats.length} Schläge` + (s.origGrid ? ' · korrigiert' : '') : 'Kein Raster vorhanden';
+}
+$('#gridBtn').onclick = () => { const p = $('#gridPanel'); p.hidden = !p.hidden; gridInfo(); };
+$('#gridClose').onclick = () => { $('#gridPanel').hidden = true; };
+$('#gHere').onclick = () => {
+  const s = app.song; if (!s || !s.beats.length) return; keepOrig();
+  const t = engine.time() + app.offset / 1000, i = lowerBoundNum(s.beats, t);
+  const c = [i - 1, i].filter(k => k >= 0 && k < s.beats.length).reduce((a, k) => Math.abs(s.beats[k] - t) < Math.abs(s.beats[a] - t) ? k : a);
+  s.firstDownbeat = c % s.timeSignature[0];
+  gridChanged('Takt-1 gesetzt (Schlag bei ' + fmtTime(s.beats[c]) + ')');
+};
+$('#gHalf').onclick = () => {
+  const s = app.song; if (!s || s.beats.length < 8) return; keepOrig();
+  const par = s.firstDownbeat % 2;
+  s.beats = s.beats.filter((_, i) => i % 2 === par); s.firstDownbeat = Math.floor(s.firstDownbeat / 2) % s.timeSignature[0];
+  s.tempo = (s.tempo || 0) / 2; gridChanged('Tempo halbiert');
+};
+$('#gDouble').onclick = () => {
+  const s = app.song; if (!s || s.beats.length < 2) return; keepOrig();
+  const nb = []; s.beats.forEach((b, i) => { nb.push(b); if (i + 1 < s.beats.length) nb.push((b + s.beats[i + 1]) / 2); });
+  s.beats = nb; s.firstDownbeat = (s.firstDownbeat * 2) % s.timeSignature[0];
+  s.tempo = (s.tempo || 0) * 2; gridChanged('Tempo verdoppelt');
+};
+const shiftGrid = ms => { const s = app.song; if (!s || !s.beats.length) return; keepOrig(); s.beats = s.beats.map(b => +(b + ms / 1000).toFixed(4)); gridChanged('Raster ' + (ms > 0 ? '+' : '') + ms + ' ms'); };
+$('#gEarly').onclick = () => shiftGrid(-10);
+$('#gLate').onclick = () => shiftGrid(10);
+$('#gReset').onclick = () => {
+  const s = app.song; if (!s || !s.origGrid) return;
+  s.beats = s.origGrid.beats; s.firstDownbeat = s.origGrid.firstDownbeat; s.tempo = s.origGrid.tempo; delete s.origGrid;
+  savePref('grid', null); rebuildView(); ui.refreshAll(); gridInfo(); toast('Original-Raster wiederhergestellt');
+};
 
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
@@ -1110,6 +1356,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'l' || e.key === 'L'){ if (app.loop.b > app.loop.a){ app.loop.on = !app.loop.on; ui.loopBtns(); } }
   else if (e.key === 'b' || e.key === 'B') setMode('bass');
   else if (e.key === 's' || e.key === 'S') setMode('drums');
+  else if (e.key === 'e' || e.key === 'E') $('#simpleBtn').click();
 });
 
 /* Drag & Drop */
