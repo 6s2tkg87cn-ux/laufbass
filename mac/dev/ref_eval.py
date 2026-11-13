@@ -77,7 +77,7 @@ def score(det, ref, local=False):
                 onset_recall=tot["on"] / max(1, tot["n"]), precision_pc=prec, f1=f1, n_det_inside=int(inside.sum()))
 
 
-def best_alignment(det, sections, beats, fd, search=range(-2, 24), slack=8):
+def best_alignment(det, sections, beats, fd, search=range(-2, 5), slack=8):
     """Each section is placed on its own: start searched within +-slack bars of where the previous
     section ended (tab repeat counts like "19x" are often approximate), but never before the previous
     section started. Where sections overlap, the earlier one is cut (its repeat count was too high)."""
