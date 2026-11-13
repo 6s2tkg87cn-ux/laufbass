@@ -1,0 +1,27 @@
+# Laufbass - Python-Pakete fuer macOS (Apple Silicon, Python 3.11)
+# Alle Versionen wurden gegen PyPI geprueft (Wheels fuer macosx_11_0_arm64 / cp311 vorhanden).
+#
+# Hinweise:
+# - numpy bleibt auf 1.26.x: numba/librosa, onnxruntime und coremltools laufen damit sauber.
+# - basic-pitch 0.4.0 zieht auf macOS mit Python 3.11 KEIN TensorFlow nach (nur coremltools).
+#   Das Skript nutzt das mitgelieferte ONNX-Modell ueber onnxruntime (stabil auf Apple Silicon);
+#   coremltools bleibt als Ausweich-Backend.
+# - torchaudio wird NICHT gebraucht (Demucs 4.1 nutzt es nur zum Trainieren).
+# - setuptools<81 weil pretty_midi noch pkg_resources importiert.
+
+torch==2.5.1
+demucs==4.1.0
+
+basic-pitch==0.4.0
+onnxruntime==1.19.2
+coremltools==8.3.0
+resampy==0.4.2
+
+numpy==1.26.4
+scipy==1.13.1
+numba==0.60.0
+llvmlite==0.43.0
+librosa==0.10.2.post1
+pretty_midi==0.2.11.post0
+soundfile==0.12.1
+setuptools<81

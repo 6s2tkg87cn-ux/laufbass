@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+venv/
+mac/out/
+mac/tmp/
+*.wav
+!mac/testdata/*.wav
