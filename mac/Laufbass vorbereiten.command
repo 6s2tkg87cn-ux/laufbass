@@ -21,20 +21,21 @@ source "$VENV/bin/activate"
 
 if [ "$#" -eq 0 ]; then
   # Native Dateiauswahl; mehrere Dateien moeglich
-  AUSWAHL="$(osascript <<'OSA' 2>/dev/null
+  # AppleScript erst in eine Variable lesen (kein Heredoc in $(...), das mag bash 3.2 nicht)
+  read -r -d '' WAHLSCRIPT <<'OSA'
 try
-  set dateien to choose file of type {"public.audio"} with prompt "Welche(n) Song(s) soll Laufbass vorbereiten?" with multiple selections allowed
+  set dateien to choose file of type {"public.audio"} with prompt "Welche Songs soll Laufbass vorbereiten?" with multiple selections allowed
   set pfade to {}
   repeat with d in dateien
     set end of pfade to POSIX path of d
   end repeat
-  set AppleScript's text item delimiters to linefeed
+  set text item delimiters of AppleScript to linefeed
   return pfade as text
 on error
   return ""
 end try
 OSA
-)"
+  AUSWAHL="$(osascript -e "$WAHLSCRIPT" 2>/dev/null)"
   if [ -z "$AUSWAHL" ]; then
     echo "Keine Datei ausgewaehlt - Abbruch."
     pause_end
