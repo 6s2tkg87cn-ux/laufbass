@@ -120,6 +120,8 @@ def crepe_track(y: np.ndarray, model: str = "full"):
 
 
 PITCH_ENGINE = "pyin"   # "pyin" or "crepe"
+FLUX_FLOOR = 0.08       # pluck click must reach this share of the song's strong clicks
+GRID_F8, GRID_F16 = 1.6, 2.0   # click / local median needed on an 8th resp. 16th grid position
 
 
 def transcribe(wav: Path, log=lambda m: None, return_debug: bool = False, keep_unsure: bool = False,
@@ -184,10 +186,10 @@ def transcribe(wav: Path, log=lambda m: None, return_debug: bool = False, keep_u
                 best = k
         if best is None or abs(g16[0][best] - t) > 0.03:
             return 2.8
-        return 1.6 if g16[1][best] % 2 == 0 else 2.0
+        return GRID_F8 if g16[1][best] % 2 == 0 else GRID_F16
     from scipy.ndimage import median_filter as _mf
     base = _mf(flux, size=int(1.0 * FPS) | 1, mode="nearest")
-    floor_ = 0.08 * float(np.percentile(flux[gate], 99)) if np.any(gate) else 0.0
+    floor_ = FLUX_FLOOR * float(np.percentile(flux[gate], 99)) if np.any(gate) else 0.0
     for i in _peaks(flux, 0.0, int(0.07 * FPS)):
         # a muted string clicks too, but then the level drops; after a real pluck it holds or rises
         # (a pluck never loses 3 dB within 35 ms of its attack, a mute always does)
