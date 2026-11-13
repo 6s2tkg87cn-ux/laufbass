@@ -31,7 +31,7 @@ im Terminal `chmod +x "Laufbass vorbereiten.command"` im Ordner ausführen.
 **Mit der App (empfohlen):** `install.sh` legt die App **„Laufbass Vorbereiten“** im
 Programme-Ordner an (auch im Launchpad zu finden). Songs einfach ins Fenster ziehen
 oder „Songs auswählen …“ klicken. Jeder Song bekommt eine Karte mit Fortschritt in
-fünf Schritten (Spuren trennen → Bass → Schlagzeug → Takt → Paket). Am Ende stehen
+fünf Schritten (Spuren trennen → Schlagzeug → Takt → Bass → Paket). Am Ende stehen
 Tempo, Notenzahl und Schläge da, dazu „Im Finder zeigen“ und „Übe-App öffnen“.
 Unten im Fenster lässt sich ein fester Speicherort wählen (Standard: neben dem Song).
 Nach einem Update einfach `install.sh` erneut ausführen – die App wird dabei neu gebaut.

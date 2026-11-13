@@ -8,9 +8,9 @@ Wandelt einen Song (MP3/WAV/M4A/...) in ein Laufbass-Paket um:
 
 Pipeline:
     1. Stems trennen        (Demucs htdemucs: bass / drums / vocals / other)
-    2. Bass transkribieren  (Spotify basic-pitch, danach monophon bereinigt)
-    3. Drums transkribieren (librosa, Frequenzband-Onsets; austauschbar)
-    4. Beats + Tempo        (Beat This! auf dem Mix, dann Raster-Glaettung + Phasenkorrektur)
+    2. Drums transkribieren (ADTOF; Ausweichloesung: Frequenzbaender)
+    3. Beats + Tempo        (Beat This! auf dem Mix, feste Zaehlzeiten, Raster-Glaettung + Phasenkorrektur)
+    4. Bass transkribieren  (bass_v2.py: Einsaetze mit Raster als Vorwissen, basic-pitch + pYIN)
     5. MIDI + song.json + ZIP schreiben
 
 Aufruf:
@@ -43,7 +43,7 @@ import numpy as np
 
 FORMAT_NAME = "laufbass"
 FORMAT_VERSION = 1
-PREP_VERSION = "2"  # Stand der Erkennung; erscheint in der Übe-App unter "Raster"
+PREP_VERSION = "3"  # Stand der Erkennung; erscheint in der Übe-App unter "Raster"
 ANALYSIS: dict = {}  # welche Verfahren wirklich benutzt wurden (Fallbacks sichtbar machen)
 STEM_NAMES = ("bass", "drums", "vocals", "other")
 BASS_TUNING = [28, 33, 38, 43]  # E1 A1 D2 G2
@@ -373,13 +373,13 @@ def transcribe_bass_basic_pitch(bass_wav: Path) -> list[Note]:
     return notes
 
 
-def transcribe_bass_v2(bass_wav: Path) -> list[Note]:
+def transcribe_bass_v2(bass_wav: Path, beats=None) -> list[Note]:
     """Default: onset segmentation + basic-pitch AND pYIN must agree (see bass_v2.py).
     Falls back to the plain basic-pitch path if something goes wrong."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import bass_v2
-        res = bass_v2.transcribe(bass_wav, log=lambda m: say("   " + m))
+        res = bass_v2.transcribe(bass_wav, log=lambda m: say("   " + m), beats=beats)
         ANALYSIS["bass"] = "v2"
         return [Note(n.t, n.d, n.p, n.v) for n in res]
     except Exception as e:
@@ -1090,19 +1090,8 @@ def process_file(audio: Path, out_dir: Path, model: str = "htdemucs", keep_temp:
         stems = stems_from_dir(stems_dir, tmp) if stems_dir else separate_stems(audio, tmp, model)
         done(t0)
 
-        # 2) bass
-        t0 = step(2, TOTAL, "Basslinie erkennen ...")
-        if bass_engine == "pyin":
-            notes = transcribe_bass_pyin(stems["bass"])
-        elif bass_engine == "basic-pitch":
-            notes = transcribe_bass_basic_pitch(stems["bass"])
-        else:
-            notes = transcribe_bass_v2(stems["bass"])
-        say(f"   {len(notes)} Bassnoten gefunden")
-        done(t0)
-
-        # 3) drums
-        t0 = step(3, TOTAL, "Schlagzeug erkennen ...")
+        # 2) drums
+        t0 = step(2, TOTAL, "Schlagzeug erkennen ...")
         hits, drum_engine = transcribe_drums(stems["drums"])
         say(f"   Verfahren: {'ADTOF (KI-Modell)' if drum_engine == 'adtof' else 'Frequenzbaender'}")
         ANALYSIS["drums"] = drum_engine
@@ -1110,8 +1099,8 @@ def process_file(audio: Path, out_dir: Path, model: str = "htdemucs", keep_temp:
         say("   " + ", ".join(f"{v} {k}" for k, v in counts.items() if v) if hits else "   keine Schlaege gefunden")
         done(t0)
 
-        # 4) beats
-        t0 = step(4, TOTAL, "Tempo und Taktschlaege bestimmen ...")
+        # 3) beats (vor dem Bass: das Raster hilft beim Finden der Bass-Einsaetze)
+        t0 = step(3, TOTAL, "Tempo und Taktschlaege bestimmen ...")
         mix = load_audio_ffmpeg(audio, SEP_SR, 1)[0]
         duration = len(mix) / SEP_SR
         # Beat-Modell laeuft auf dem kompletten Original-Mix (nicht auf einem Stem)
@@ -1134,6 +1123,17 @@ def process_file(audio: Path, out_dir: Path, model: str = "htdemucs", keep_temp:
             how = "aus den Modell-Downbeats"
         say(f"   Tempo {tempo:.1f} BPM, {beats_per_bar}/4-Takt, {len(beats)} Schlaege, "
             f"erste '1' = Schlag {first_db + 1} ({how})")
+        done(t0)
+
+        # 4) bass
+        t0 = step(4, TOTAL, "Basslinie erkennen ...")
+        if bass_engine == "pyin":
+            notes = transcribe_bass_pyin(stems["bass"])
+        elif bass_engine == "basic-pitch":
+            notes = transcribe_bass_basic_pitch(stems["bass"])
+        else:
+            notes = transcribe_bass_v2(stems["bass"], beats)
+        say(f"   {len(notes)} Bassnoten gefunden")
         done(t0)
 
         # 5) package

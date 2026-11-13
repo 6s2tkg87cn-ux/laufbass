@@ -46,6 +46,15 @@ def _peaks(x: np.ndarray, thr: float, min_dist: int, prom: float | None = None) 
     return idx
 
 
+def sixteenth_grid(beats):
+    """(times, index) of all 16th positions between the beats; even index = 8th position."""
+    if beats is None or len(beats) < 2:
+        return None
+    b = np.asarray(beats, dtype=float)
+    t = (b[:-1, None] + np.diff(b)[:, None] * np.arange(4)[None, :] / 4).ravel()
+    return t, np.tile(np.arange(4), len(b) - 1)
+
+
 def pluck_flux(y: np.ndarray, length: int) -> np.ndarray:
     """Log spectral flux 0.4-3 kHz (against the max of the 2 previous frames), one value per frame."""
     import librosa
@@ -88,7 +97,8 @@ def pyin_track(y: np.ndarray):
     return midi, np.nan_to_num(vprob)
 
 
-def transcribe(wav: Path, log=lambda m: None, return_debug: bool = False, keep_unsure: bool = False):
+def transcribe(wav: Path, log=lambda m: None, return_debug: bool = False, keep_unsure: bool = False,
+               beats=None):
     import librosa
     from scipy.ndimage import median_filter, maximum_filter1d
 
@@ -135,6 +145,21 @@ def transcribe(wav: Path, log=lambda m: None, return_debug: bool = False, keep_u
     # where the level dips only 1-2 dB (steady eighths): on real songs it separates every eighth-note
     # attack from the positions between them.
     flux = pluck_flux(y, m)
+    # Beat grid as prior: bass players play on the grid, so a weaker click is enough on an 8th / 16th
+    # position (unaccented eighths, a bass buried in the full band), off the grid a clear one is needed.
+    g16 = sixteenth_grid(beats)
+    def grid_factor(i):
+        if g16 is None:
+            return 2.5
+        t = i / FPS
+        j = int(np.searchsorted(g16[0], t))
+        best = None
+        for k in (j - 1, j):
+            if 0 <= k < len(g16[0]) and (best is None or abs(g16[0][k] - t) < abs(g16[0][best] - t)):
+                best = k
+        if best is None or abs(g16[0][best] - t) > 0.03:
+            return 2.8
+        return 1.6 if g16[1][best] % 2 == 0 else 2.0
     from scipy.ndimage import median_filter as _mf
     base = _mf(flux, size=int(1.0 * FPS) | 1, mode="nearest")
     floor_ = 0.08 * float(np.percentile(flux[gate], 99)) if np.any(gate) else 0.0
@@ -144,7 +169,7 @@ def transcribe(wav: Path, log=lambda m: None, return_debug: bool = False, keep_u
         nxt = db[i + 1:min(m, i + 4)]
         if len(nxt) and float(nxt.min()) < float(db[max(0, i - 1)]) - 3.0:
             continue
-        if flux[i] > max(2.5 * base[i], floor_) and gate[min(m - 1, i + 2)]:
+        if flux[i] > max(grid_factor(i) * base[i], floor_) and gate[min(m - 1, i + 2)]:
             k = i
             near = [c for c in cand if abs(c - i) <= 2]
             if near:
