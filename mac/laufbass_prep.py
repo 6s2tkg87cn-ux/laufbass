@@ -7,14 +7,14 @@ Wandelt einen Song (MP3/WAV/M4A/...) in ein Laufbass-Paket um:
     <Titel>.laufbass.zip  (siehe docs/FORMAT.md)
 
 Pipeline:
-    1. Stems trennen        (Demucs htdemucs: bass / drums / vocals / other)
+    1. Stems trennen        (Demucs htdemucs_ft: bass / drums / vocals / other)
     2. Drums transkribieren (ADTOF; Ausweichloesung: Frequenzbaender)
     3. Beats + Tempo        (Beat This! auf dem Mix, feste Zaehlzeiten, Raster-Glaettung + Phasenkorrektur)
     4. Bass transkribieren  (bass_v2.py: Einsaetze mit Raster als Vorwissen, basic-pitch + pYIN)
     5. MIDI + song.json + ZIP schreiben
 
 Aufruf:
-    python laufbass_prep.py song.mp3 [-o AUSGABEORDNER] [--keep-temp] [--model htdemucs]
+    python laufbass_prep.py song.mp3 [-o AUSGABEORDNER] [--keep-temp] [--model htdemucs_ft]
 """
 from __future__ import annotations
 
@@ -43,12 +43,15 @@ import numpy as np
 
 FORMAT_NAME = "laufbass"
 FORMAT_VERSION = 1
-PREP_VERSION = "3"  # Stand der Erkennung; erscheint in der Übe-App unter "Raster"
+PREP_VERSION = "4"  # Stand der Erkennung; erscheint in der Übe-App unter "Raster"
 ANALYSIS: dict = {}  # welche Verfahren wirklich benutzt wurden (Fallbacks sichtbar machen)
 STEM_NAMES = ("bass", "drums", "vocals", "other")
 BASS_TUNING = [28, 33, 38, 43]  # E1 A1 D2 G2
 BASS_MIN_MIDI, BASS_MAX_MIDI = 28, 67
 SEP_SR = 44100  # Samplerate fuer Demucs / Analyse
+# htdemucs_ft: 4 feinabgestimmte Modelle (je eines pro Spur). Gegen Nutzer-Tabs gemessen bei allen Songs
+# gleich gut oder besser als htdemucs (Just Like Heaven Bass-F1 0.57 -> 0.66), dafuer ca. 4x Rechenzeit.
+DEMUCS_MODEL = "htdemucs_ft"
 
 # General-MIDI-Drum-Map laut FORMAT.md
 GM_DRUMS = {
@@ -135,7 +138,7 @@ def _pick_device(torch):
     return "cpu"
 
 
-def separate_stems(audio_path: Path, tmp_dir: Path, model_name: str = "htdemucs") -> dict[str, Path]:
+def separate_stems(audio_path: Path, tmp_dir: Path, model_name: str = DEMUCS_MODEL) -> dict[str, Path]:
     """Run Demucs through its Python API; returns {stem: wav_path} (float WAV, 44.1 kHz stereo)."""
     try:
         import torch
@@ -169,10 +172,24 @@ def separate_stems(audio_path: Path, tmp_dir: Path, model_name: str = "htdemucs"
 
     device = _pick_device(torch)
 
+    total = mix.shape[-1]
+    last = [-1]
+
+    def progress(d: dict) -> None:
+        # one bar 0..100 % over all sub-models (htdemucs_ft = 4 models); the GUI reads "NN%|"
+        if d.get("state") != "end":
+            return
+        k, n = d.get("model_idx_in_bag", 0), max(1, d.get("models", 1))
+        pct = int(100 * (k + min(1.0, d.get("segment_offset", 0) / total)) / n)
+        if pct > last[0]:
+            last[0] = pct
+            say(f"   Trennung {pct:3d}%|")
+
     def run(dev: str):
+        last[0] = -1
         with torch.no_grad():
             return apply_model(model, mix, device=dev, shifts=1, split=True,
-                               overlap=0.25, progress=True)[0]
+                               overlap=0.25, progress=False, callback=progress)[0]
 
     say(f"   Rechne auf: {'Apple-GPU (MPS)' if device == 'mps' else 'CPU'}")
     try:
@@ -1072,7 +1089,7 @@ def write_package(zip_path: Path, files: dict[str, Path]) -> None:
 # --------------------------------------------------------------------------
 # Gesamtablauf
 # --------------------------------------------------------------------------
-def process_file(audio: Path, out_dir: Path, model: str = "htdemucs", keep_temp: bool = False,
+def process_file(audio: Path, out_dir: Path, model: str = DEMUCS_MODEL, keep_temp: bool = False,
                  stems_dir: Path | None = None, bass_engine: str = "v2",
                  bitrate: int = 256) -> Path:
     t_all = time.time()
@@ -1174,7 +1191,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("songs", nargs="+", help="Audiodatei(en), z. B. song.mp3")
     ap.add_argument("-o", "--outdir", help="Ausgabeordner (Standard: Ordner der Eingabedatei)")
     ap.add_argument("--keep-temp", action="store_true", help="Temporaere Dateien behalten")
-    ap.add_argument("--model", default="htdemucs", help="Demucs-Modell (Standard: htdemucs)")
+    ap.add_argument("--model", default=DEMUCS_MODEL, help=f"Demucs-Modell (Standard: {DEMUCS_MODEL}; schneller: htdemucs)")
     # developer options (hidden)
     ap.add_argument("--stems-dir", help=argparse.SUPPRESS)
     ap.add_argument("--bass-engine", choices=["v2", "basic-pitch", "pyin"], default="v2", help=argparse.SUPPRESS)

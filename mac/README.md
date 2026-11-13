@@ -53,8 +53,11 @@ Die fertige `.laufbass.zip` öffnest du dann in der Laufbass-App.
 
 ## Wie lange dauert es?
 
-Auf einem MacBook Air M1 ungefähr **2–5 Minuten für einen Song von 4 Minuten**
+Auf einem MacBook Air M1 ungefähr **6–10 Minuten für einen Song von 4 Minuten**
 (der größte Teil ist die Instrumententrennung; das allererste Mal kommt der Modell-Download dazu).
+Getrennt wird mit `htdemucs_ft`: vier Modelle, je eines pro Spur. Das dauert etwa viermal so lange wie das
+einfache `htdemucs`, liefert aber messbar sauberere Bass- und Schlagzeugspuren und damit bessere Noten.
+Wer es eilig hat: `laufbass_prep.py song.mp3 --model htdemucs`.
 Das Fenster bitte währenddessen offen lassen; das MacBook zieht dabei Strom und wird warm.
 
 ## So wird erkannt

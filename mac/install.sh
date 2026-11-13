@@ -84,7 +84,7 @@ echo "Schritt 4/5: Pakete installieren (beim ersten Mal ca. 1 GB, 5-10 Minuten) 
 
 # --- 5) Modell vorab laden --------------------------------------------------
 echo ""
-echo "Schritt 5/5: KI-Modelle laden und testen (ca. 160 MB, Internet noetig) ..."
+echo "Schritt 5/5: KI-Modelle laden und testen (ca. 400 MB, Internet noetig) ..."
 "$VENV/bin/python" - <<'PYEOF'
 import sys, warnings
 warnings.filterwarnings("ignore")
@@ -92,7 +92,7 @@ try:
     import torch, numpy as np
     from demucs.pretrained import get_model
     from demucs.apply import apply_model
-    m = get_model("htdemucs"); m.eval()
+    m = get_model("htdemucs_ft"); m.eval()  # 4 Teilmodelle, ca. 320 MB
     dev = "mps" if torch.backends.mps.is_available() else "cpu"
     x = torch.zeros(1, 2, 44100 * 2)
     try:
