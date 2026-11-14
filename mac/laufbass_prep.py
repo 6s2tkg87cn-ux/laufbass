@@ -758,36 +758,38 @@ def clean_beat_sequence(beats: np.ndarray) -> np.ndarray:
     return np.asarray(out, dtype=float)
 
 
-def assign_beat_indices(beats: np.ndarray, win: int = 24, tol: float = 0.3,
+def assign_beat_indices(beats: np.ndarray, hist: int = 8, tol: float = 0.3,
                         max_skip: int = 6) -> tuple[np.ndarray, np.ndarray]:
     """Give every detector beat an integer position on the beat grid.
 
-    The local beat period is the median interval over +-win beats, so a short stretch where the model
-    hears double time (or skips beats) cannot change it. Each beat advances the count by
-    round(gap / period). Beats that land between grid positions (|r - round(r)| > tol, e.g. half-beat
-    extras in a double-time stretch) are dropped instead of being counted - otherwise the bar count
-    shifts and the '1' ends up on the wrong beat for the rest of the song.
+    The beat period is followed sequentially: it starts at the song's median interval and afterwards is
+    the median of the last `hist` ACCEPTED periods, so it adapts to gradual tempo changes but not to the
+    model suddenly hearing double time (or half time) - even when that lasts several bars. Each beat
+    advances the count by round(gap / period). Beats between grid positions (|r - round(r)| > tol, e.g.
+    the extra half beats of a double-time stretch) are dropped instead of being counted - otherwise the
+    bar count shifts and the '1' ends up on the wrong beat for the rest of the song.
 
     Returns (kept_times, integer_indices)."""
     b = np.sort(np.asarray(beats, dtype=float))
     n = len(b)
     if n < 3:
         return b, np.arange(n)
-    d = np.diff(b)
-    loc = np.empty(n - 1)
-    for i in range(n - 1):
-        lo, hi = max(0, i - win), min(n - 1, i + win + 1)
-        loc[i] = float(np.median(d[lo:hi]))
+    L = float(np.median(np.diff(b)))
+    periods: list[float] = []
     keep_t, keep_i = [b[0]], [0]
     skipped = 0
     for i in range(1, n):
-        L = loc[min(i - 1, n - 2)]
-        r = (b[i] - keep_t[-1]) / L if L > 0 else 1.0
+        gap = b[i] - keep_t[-1]
+        r = gap / L if L > 0 else 1.0
         k = int(round(r))
         if k >= 1 and (abs(r - k) <= tol or skipped >= max_skip):
             keep_t.append(b[i])
             keep_i.append(keep_i[-1] + k)
             skipped = 0
+            periods.append(gap / k)
+            if len(periods) > hist:
+                periods.pop(0)
+            L = float(np.median(periods))
         else:
             skipped += 1  # off-grid extra beat
     return np.asarray(keep_t), np.asarray(keep_i, dtype=int)
