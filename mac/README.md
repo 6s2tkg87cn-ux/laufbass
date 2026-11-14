@@ -58,6 +58,12 @@ Auf einem MacBook Air M1 ungefähr **6–10 Minuten für einen Song von 4 Minute
 Getrennt wird mit `htdemucs_ft`: vier Modelle, je eines pro Spur. Das dauert etwa viermal so lange wie das
 einfache `htdemucs`, liefert aber messbar sauberere Bass- und Schlagzeugspuren und damit bessere Noten.
 Wer es eilig hat: `laufbass_prep.py song.mp3 --model htdemucs`.
+
+**Beste Qualität (Schalter unten im App-Fenster):** trennt mit **BS-RoFormer SW** statt `htdemucs_ft`.
+Gegen Bass-Tabs gemessen meist besser (Just Like Heaven F1 0,66 → 0,76, Mr. Brightside 0,84 → 0,87,
+Come Together gleich, Come As You Are etwas schlechter), braucht aber deutlich länger und lädt beim ersten Mal
+ca. 700 MB. Im Terminal: `--model bs_roformer`. Klappt die Trennung damit nicht, wird automatisch mit
+`htdemucs_ft` weitergemacht.
 Das Fenster bitte währenddessen offen lassen; das MacBook zieht dabei Strom und wird warm.
 
 ## So wird erkannt

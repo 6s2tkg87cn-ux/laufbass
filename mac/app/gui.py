@@ -86,7 +86,13 @@ class Api:
         ffmpeg = any((Path(p) / "ffmpeg").exists() for p in os.environ["PATH"].split(":"))
         beat = (Path.home() / ".cache/torch/hub/checkpoints/beat_this-final0.ckpt").exists()
         return {"ffmpeg": ffmpeg, "beatModel": beat, "outdir": self.settings.get("outdir", ""),
-                "practice": PRACTICE_APP.exists()}
+                "practice": PRACTICE_APP.exists(), "best": bool(self.settings.get("best"))}
+
+    def set_best(self, on: bool) -> bool:
+        """'Beste Qualitaet': Trennung mit BS-RoFormer statt htdemucs_ft (genauer, langsamer)."""
+        self.settings["best"] = bool(on)
+        save_settings(self.settings)
+        return self.settings["best"]
 
     def choose_files(self) -> list:
         import webview
@@ -174,6 +180,8 @@ class Api:
         t0 = time.time()
         self._emit({"type": "state", "id": jid, "state": "läuft", "started": t0})
         cmd = [sys.executable, "-u", str(PREP), job["file"], "-o", job["outdir"]]
+        if self.settings.get("best"):
+            cmd += ["--model", "bs_roformer"]
         env = dict(os.environ, PYTHONUNBUFFERED="1")
         try:
             Path(job["outdir"]).mkdir(parents=True, exist_ok=True)

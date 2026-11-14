@@ -85,7 +85,7 @@ footer .sp{flex:1}
   </div>
   <div id="notices"></div>
   <div class="list" id="list"></div>
-  <div class="empty" id="empty">Pro Song dauert es auf dem M1 etwa 1–3 Minuten. Du kannst mehrere Songs auf einmal hineinziehen; sie werden nacheinander vorbereitet.</div>
+  <div class="empty" id="empty">Pro Song dauert es auf dem M1 etwa 6–10 Minuten, mit „Beste Qualität“ länger. Du kannst mehrere Songs auf einmal hineinziehen; sie werden nacheinander vorbereitet.</div>
 </main>
 
 <footer>
@@ -94,6 +94,7 @@ footer .sp{flex:1}
   <button class="link" id="outBtn">ändern …</button>
   <button class="link" id="outReset" style="display:none">zurücksetzen</button>
   <span class="sp"></span>
+  <label title="Trennt die Spuren mit BS-RoFormer statt htdemucs_ft: sauberere Bass-Spur, dauert aber deutlich länger (einmalig 700 MB Download)"><input type="checkbox" id="bestChk"> Beste Qualität (langsamer)</label>
   <span id="queueInfo"></span>
 </footer>
 <div id="toast"></div>
@@ -177,6 +178,7 @@ async function init(){
   api = window.pywebview.api;
   const st = await api.status();
   setOut(st.outdir);
+  $('#bestChk').checked = !!st.best;
   const n = [];
   if (!st.ffmpeg) n.push('ffmpeg wurde nicht gefunden. Bitte <b>install.sh</b> noch einmal ausführen.');
   if (!st.beatModel) n.push('Das Beat-Modell fehlt – die Takterkennung ist dann ungenauer. <b>install.sh</b> mit Internetverbindung erneut ausführen behebt das.');
@@ -184,6 +186,7 @@ async function init(){
   $('#practiceBtn').style.display = st.practice ? '' : 'none';
 }
 $('#chooseBtn').onclick = () => api.choose_files();
+$('#bestChk').onchange = async e => { e.target.checked = await api.set_best(e.target.checked); };
 $('#outBtn').onclick = async () => setOut(await api.choose_outdir());
 $('#outReset').onclick = async () => setOut(await api.reset_outdir());
 $('#practiceBtn').onclick = () => api.open_practice();
