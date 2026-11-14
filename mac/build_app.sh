@@ -16,6 +16,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/practice"
 
 cp "$HIER/app/gui.py" "$HIER/app/ui.html" "$HIER/app/icon.png" "$HIER/laufbass_prep.py" "$HIER/bass_v2.py" "$APP/Contents/Resources/"
+cp "$HIER/sep_roformer.py" "$APP/Contents/Resources/"
+mkdir -p "$APP/Contents/Resources/roformer" && cp "$HIER/roformer/"*.py "$HIER/roformer/LICENSE-MSST" "$APP/Contents/Resources/roformer/"
 cp "$ROOT/app/index.html" "$APP/Contents/Resources/practice/index.html"
 
 # --- Info.plist ---

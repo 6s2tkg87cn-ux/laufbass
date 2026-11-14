@@ -138,8 +138,60 @@ def _pick_device(torch):
     return "cpu"
 
 
+def separate_stems_roformer(audio_path: Path, tmp_dir: Path) -> dict[str, Path]:
+    """BS-RoFormer SW (sep_roformer.py): 6 stems; guitar + piano + other are summed into "other"."""
+    import torch
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import sep_roformer
+    wav = load_audio_ffmpeg(audio_path, SEP_SR, 2)
+    if wav.shape[1] < SEP_SR:
+        raise LaufbassError("Die Audiodatei ist kuerzer als eine Sekunde.")
+    device = _pick_device(torch)
+    last = [-1]
+
+    def progress(k: int, n: int) -> None:
+        pct = int(100 * k / max(1, n))
+        if pct > last[0]:
+            last[0] = pct
+            say(f"   Trennung {pct:3d}%|")
+
+    try:
+        model = sep_roformer.load_model(device)
+    except Exception as e:
+        raise LaufbassError(f"Das Trennmodell BS-RoFormer konnte nicht geladen werden ({e}).")
+    say(f"   Trennmodell: BS-RoFormer SW, rechne auf: {'Apple-GPU (MPS)' if device == 'mps' else 'CPU'}")
+    try:
+        out = sep_roformer.separate(wav, device=device, progress=progress, model=model)
+    except Exception as e:
+        if device != "mps":
+            raise LaufbassError(f"Die Stem-Trennung ist fehlgeschlagen: {e}")
+        say(f"   Hinweis: GPU-Berechnung fehlgeschlagen ({str(e)[:120]}). Versuche es mit der CPU - das dauert laenger.")
+        last[0] = -1
+        out = sep_roformer.separate(wav, device="cpu", progress=progress, model=model.to("cpu"))
+    out["other"] = out["other"] + out.pop("guitar") + out.pop("piano")
+    stems: dict[str, Path] = {}
+    for name in STEM_NAMES:
+        data = out[name].astype(np.float32)
+        peak = float(np.abs(data).max())
+        if peak > 0.99:
+            data = data * (0.99 / peak)
+        p = tmp_dir / f"{name}.wav"
+        write_wav(p, data, SEP_SR)
+        stems[name] = p
+    return stems
+
+
 def separate_stems(audio_path: Path, tmp_dir: Path, model_name: str = DEMUCS_MODEL) -> dict[str, Path]:
-    """Run Demucs through its Python API; returns {stem: wav_path} (float WAV, 44.1 kHz stereo)."""
+    """Run Demucs through its Python API; returns {stem: wav_path} (float WAV, 44.1 kHz stereo).
+    model_name "bs_roformer": BS-RoFormer SW instead (falls back to htdemucs_ft on any problem)."""
+    if model_name == "bs_roformer":
+        try:
+            return separate_stems_roformer(audio_path, tmp_dir)
+        except LaufbassError as e:
+            say(f"   WARNUNG: {e}")
+            say("   Es wird ersatzweise mit htdemucs_ft getrennt.")
+            ANALYSIS["separation"] = "htdemucs_ft"
+            model_name = "htdemucs_ft"
     try:
         import torch
         from demucs.apply import apply_model
@@ -1095,6 +1147,7 @@ def process_file(audio: Path, out_dir: Path, model: str = DEMUCS_MODEL, keep_tem
                  stems_dir: Path | None = None, bass_engine: str = "v2",
                  bitrate: int = 256) -> Path:
     t_all = time.time()
+    ANALYSIS.clear()
     title = audio.stem
     out_dir.mkdir(parents=True, exist_ok=True)
     zip_path = out_dir / f"{title}.laufbass.zip"
@@ -1170,7 +1223,8 @@ def process_file(audio: Path, out_dir: Path, model: str = DEMUCS_MODEL, keep_tem
         files["bass.mid"], files["drums.mid"] = tmp / "bass.mid", tmp / "drums.mid"
         song = build_song_json(title, audio.name, duration, tempo, beats, first_db, list(stems), notes, hits,
                                beats_per_bar, beat_mode)
-        song["analysis"] = {"version": PREP_VERSION, "separation": model if not stems_dir else "stems-dir",
+        song["analysis"] = {"version": PREP_VERSION,
+                            "separation": ANALYSIS.get("separation", model) if not stems_dir else "stems-dir",
                             "bass": ANALYSIS.get("bass", bass_engine), "drums": ANALYSIS.get("drums", "?"),
                             "beats": ANALYSIS.get("beats", "?")}
         (tmp / "song.json").write_text(json.dumps(song, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -1193,7 +1247,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("songs", nargs="+", help="Audiodatei(en), z. B. song.mp3")
     ap.add_argument("-o", "--outdir", help="Ausgabeordner (Standard: Ordner der Eingabedatei)")
     ap.add_argument("--keep-temp", action="store_true", help="Temporaere Dateien behalten")
-    ap.add_argument("--model", default=DEMUCS_MODEL, help=f"Demucs-Modell (Standard: {DEMUCS_MODEL}; schneller: htdemucs)")
+    ap.add_argument("--model", default=DEMUCS_MODEL, help=f"Trennmodell (Standard: {DEMUCS_MODEL}; schneller: htdemucs; genauer: bs_roformer)")
     # developer options (hidden)
     ap.add_argument("--stems-dir", help=argparse.SUPPRESS)
     ap.add_argument("--bass-engine", choices=["v2", "basic-pitch", "pyin"], default="v2", help=argparse.SUPPRESS)
